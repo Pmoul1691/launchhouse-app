@@ -71,14 +71,6 @@ channel = "stable-25_05"
 # is not.
 TZ = "UTC"
 
-# Nothing else is set here on purpose. A slim Node build would not know America/New_York, and
-# every scheduled post depends on that zone resolving, but the answer to that is a boot
-# assertion rather than an environment variable: env.ts constructs a formatter for New York
-# inside a try and refuses to start if it throws. An assertion cannot be silently wrong.
-#
-# MEASURED, 31 August 2026: the probe reports full ICU on this image and correct New York
-# daylight saving transitions. The assertion has something real to stand on now.
-
 [[ports]]
 localPort = 5000
 externalPort = 80
