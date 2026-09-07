@@ -27,7 +27,7 @@ import type { Gate, GateFileRow, GateId, GateTrack, ProvedBy } from "./gates-par
 export type { Gate, GateFileRow, GateId, GateTrack, ProvedBy };
 
 /** sha256 of the gates.md this was generated from. The test recomputes it. */
-export const GATES_MD_SHA256 = "1e9dfb3b71875b3e275ceb35df8e24d814a88cbf916c9f5dbd4d030e5285f67e";
+export const GATES_MD_SHA256 = "85c41eb8a7ca290f9a18496f336243d82f75f7147c175957f3021ee35274d1f3";
 
 /** The table `ge index` reads, in its own order. */
 export const GATE_FILES: readonly GateFileRow[] = [
@@ -42,7 +42,7 @@ export const GATE_FILES: readonly GateFileRow[] = [
   { file: "inbound-scripts.md", gateLabel: "gate C", gates: ["C"], track: "b2c", session: "2" },
   { file: "ops-workflow.md", gateLabel: "gate C", gates: ["C"], track: "both", session: "2" },
   { file: "90-day-plan.md", gateLabel: "-", gates: [], track: "both", session: "the weekend" },
-  { file: "playbook-insert.md", gateLabel: "-", gates: [], track: "both", session: "before the print deadline" },
+  { file: "playbook-insert.md", gateLabel: "-", gates: [], track: "both", session: "3" },
   { file: "ledger.md", gateLabel: "-", gates: [], track: "both", session: "any" },
   { file: "memory.md", gateLabel: "-", gates: [], track: "both", session: "any" },
   { file: "ops-log.md", gateLabel: "-", gates: [], track: "both", session: "any" },

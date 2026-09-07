@@ -36,48 +36,64 @@ Sign up on the same email address, and stay on it. Your work lives in this accou
 
 ## 4. Bring your copy into Replit
 
-Go to **https://replit.com/import** and give it the address of **your fork**, not ours.
+Go to **https://replit.com/import**.
 
-Your fork's address is github.com, then your username, then the app name. It is in your browser's address bar when you are looking at it.
+Connect your GitHub account when it asks. Then **pick your fork out of the list it shows you.** You forked it a minute ago, so it will be near the top. There is no URL to find and nothing to paste.
 
 That gives you your own running app. Not a shared login, not an account on our system: your app, your database, and nobody else can see inside it.
 
-## 5. Give it a database
+## 5. Answer Replit's assistant
 
-Open the **Database** pane down the left of your new copy and create a Postgres database.
+Replit brings your copy in using an assistant that talks to you while it works. This is Replit's, not ours, and it asks questions before it finishes. That is normal and it is not a sign anything is wrong.
 
-That is the whole step. One button. The app finds it on its own and sets itself up the first time it starts, so there is nothing to run and nothing to configure.
+Three things to know:
 
-This is where your work is kept. Without it the app will tell you it cannot sign you in yet.
+- **If it offers to get the app running, say yes.**
+- **It will ask you to choose a project passphrase.** That passphrase is how you get into your app, and it is the only way in. Make it at least twelve characters and put it in your password manager while you are looking at it. We cannot reset it for you. It is in your account, not ours.
+- **It usually creates your database at the same time.** You do not have to ask it to.
 
-## 6. Set your passphrase
+Answer in plain words. It is reading a file inside your copy that tells it what this app needs, so it already knows most of it.
 
-Open the **Secrets** pane and add one secret:
+## 6. When it says it has finished, ignore what it suggests next
 
-- Name: `OWNER_PASSPHRASE`
-- Value: something you choose, at least twelve characters
+Replit's assistant signs off by offering you follow-up tasks. Adding an API key is a common one. So is fixing timezone and deployment checks.
 
-This is how you get into your app, and it is the only way in. Put it in your password manager now, while you are looking at it.
+**Do not click any of them.** They are Replit's generic suggestions and they are not steps in this programme.
 
-We cannot reset it for you. It is in your account, not ours.
+The API key goes into the app instead, at step 8. That takes ten seconds and it checks the key actually works, which Replit's version does not. The timezone and deployment settings are already correct in your copy, because they are written into the files you forked.
 
-## 7. Start it and sign in
+Following those suggestions costs an evening and changes nothing.
 
-Press **Run**, wait for it to finish starting, and open the app. Sign in with the passphrase you just set.
+## 7. Check the database and the passphrase
+
+Two things have to be true before you can sign in. The assistant has usually done both already, so this is a look rather than a job.
+
+To find them, open the **Tools** menu, above the preview window. They are not down the left.
+
+- **Database.** There should be a Postgres database. If there is not, create one. It is one button, and the app finds it on its own and sets itself up the first time it starts.
+- **Secrets.** There should be a secret called `OWNER_PASSPHRASE`. If the assistant asked you for a project passphrase, this is where it went and you are done. If it is missing, add it now, at least twelve characters.
+
+Without the database the app will tell you it cannot sign you in yet.
+
+## 8. Start it and sign in
+
+Press **Run**, wait for it to finish starting, and sign in with your passphrase.
+
+**Work in the preview window inside Replit.** That is where this app is meant to be used and where we will be looking when we help you.
 
 If anything is missing, the first screen tells you what and what to do about it. It is written to be read by somebody who has never done this before.
 
-## 8. TIME-CRITICAL: add your Anthropic API key
+## 9. TIME-CRITICAL: add your Anthropic API key
 
 Inside the app, go to **Setup** and paste an Anthropic API key.
 
 Get one at console.anthropic.com. This is not the same thing as a Claude subscription, and having one does not give you the other. It is billed by usage, and you will need to put a small amount of credit on it, around 20 USD to start.
 
-**Paste it into the app, not into Replit's settings.** Replit can store keys for you, at https://replit.com/repls?settings.show=true&settings.tab=integrations, and a key kept there works. What it does not do is check the key. Pasting it into the app asks Anthropic two questions first: is this a real key, and does this account have credit on it. The second one is the one that catches a key that looks perfect and does nothing.
+**Paste it into the app, not into Replit's settings, and not into the task Replit's assistant offered you at step 6.** Replit can store keys for you and a key kept there works. What it does not do is check the key. Pasting it into the app asks Anthropic two questions first: is this a real key, and does this account have credit on it. The second one is the one that catches a key that looks perfect and does nothing.
 
 Do this before Session 1. Without it the app can hold your work but cannot write anything, and that is the whole of Session 1.
 
-## 9. Check you are ready
+## 10. Check you are ready
 
 In the app, open **Home**. It shows you every engine and what state it is in.
 
@@ -109,13 +125,13 @@ Two things to know before you do.
 
 If you are unsure which you are, ask in the Slack channel before Session 1 rather than guessing and switching later.
 
-## 10. TIME-CRITICAL if you sell to consumers
+## 11. TIME-CRITICAL if you sell to consumers
 
 Convert your Instagram to a Business or Creator account and link it to a Facebook Page.
 
 Two minutes. Nothing publishes or captures inbound without it.
 
-## 11. Collect your pictures and clips. Start now, finish before Atlanta
+## 12. Collect your pictures and clips. Start now, finish before Atlanta
 
 This is the one people leave and then cannot fix on the day.
 
