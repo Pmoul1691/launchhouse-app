@@ -16,6 +16,10 @@ import assert from 'node:assert/strict';
 import {
   assertFounderId,
   assertSafeRelPath,
+  extensionOf,
+  isUploadPath,
+  UPLOAD_EXTENSIONS,
+  uploadSlug,
   founderRoot,
   geHome,
   isExcludedPath,
@@ -177,5 +181,100 @@ describe('personSlug, the derive rule from schemas/person.md', () => {
 
   it('refuses a key that derives nothing', () => {
     assert.throws(() => personFilePath('@@@'), PathRefused);
+  });
+});
+
+/**
+ * THE UPLOAD NAME RULE, AND WHY IT IS THE ONE THING IN THIS FILE THAT SANITISES.
+ *
+ * Everything else here refuses, because everything else is a path this product
+ * built and a bad one is a bug. An uploaded file's name is typed by a person, so
+ * `Sam's post (final).pdf` is the ordinary case and not an attack.
+ *
+ * The cost of getting it wrong is not a refused upload. assertSafeRelPath runs on
+ * every ge_file row inside materialise, before the rebuild decision, so a name it
+ * refuses written into the record throws PathRefused out of every future turn,
+ * permanently. Which is why the output of this function is asserted to survive
+ * assertSafeRelPath rather than merely to look tidy.
+ */
+describe('the name a founder can actually upload under', () => {
+  it('keeps what founders really call their files, and produces something storable', () => {
+    const real = [
+      "Sam's post (final).pdf",
+      'my-résumé.md',
+      '-lead.md',
+      'Notes, draft 2.TXT',
+      'photo 1.JPG',
+      '~/Desktop/deep/folder/sample.md',
+      'C:\\Users\\sam\\notes.md',
+    ];
+    for (const name of real) {
+      const slug = uploadSlug(name);
+      // The real assertion. Not "it looks nice": that it cannot wedge materialise.
+      assert.doesNotThrow(
+        () => assertSafeRelPath(`voice-samples/${slug}`),
+        `voice-samples/${slug} would throw out of every future materialise`,
+      );
+    }
+  });
+
+  it('never lets a directory out of the name', () => {
+    // A path in the name is the browser's business, not ours. Only the last part
+    // is a file name, and neither separator may survive into the record.
+    assert.equal(uploadSlug('../../etc/passwd.md'), 'passwd.md');
+    assert.equal(uploadSlug('a/b/c/notes.md'), 'notes.md');
+    assert.doesNotMatch(uploadSlug('C:\\Users\\sam\\notes.md'), /[\\/]/);
+  });
+
+  it('keeps the extension, because the extension is what decides readability', () => {
+    assert.equal(extensionOf('Report.PDF'), '.pdf');
+    assert.equal(extensionOf('a.b.tar.gz'), '.gz');
+    assert.equal(extensionOf('noextension'), '');
+    assert.equal(extensionOf('.hidden'), '', 'a leading dot is not an extension');
+    assert.ok(uploadSlug('Report.PDF').endsWith('.pdf'));
+  });
+
+  it('still yields a name when there is nothing left to work with', () => {
+    // Every character stripped would otherwise produce `voice-samples/`, which
+    // assertSafeRelPath reads as a folder and refuses.
+    assert.equal(uploadSlug('...pdf'), 'sample.pdf');
+    assert.equal(uploadSlug('!!!.md'), 'sample.md');
+  });
+});
+
+/**
+ * The allowed list is measured against the model's own Read tool, not chosen, so
+ * the test that matters is that the formats Read REFUSES are absent from it.
+ * Accepting one would mean storing a file, charging it against the founder's
+ * limits, showing it in their Files, and then having the model say it cannot open
+ * it, which is a worse outcome than refusing at the upload screen.
+ */
+describe('what may be uploaded', () => {
+  it('holds nothing the model cannot open', () => {
+    // Refused by Read outright, with "This tool cannot read binary files".
+    for (const ext of ['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.bmp', '.tiff']) {
+      assert.equal(UPLOAD_EXTENSIONS.includes(ext), false, `${ext} cannot be read by the model`);
+    }
+    // In neither of Read's sets, so it is not refused and is read as text. That is
+    // worse than a refusal, and it is an iPhone's default.
+    assert.equal(UPLOAD_EXTENSIONS.includes('.heic'), false, 'heic is read as text, silently');
+  });
+
+  it('holds the ones a founder is most likely to have', () => {
+    for (const ext of ['.md', '.txt', '.pdf', '.png', '.jpg']) {
+      assert.equal(UPLOAD_EXTENSIONS.includes(ext), true, ext);
+    }
+  });
+});
+
+describe('which paths are uploads', () => {
+  it('covers what is inside the folder and never the folder itself', () => {
+    assert.equal(isUploadPath('voice-samples/sample.md'), true);
+    assert.equal(isUploadPath('voice-samples/'), false, 'the folder is not a file');
+    assert.equal(isUploadPath('voice-samples'), false);
+    assert.equal(isUploadPath('founder-brain.md'), false);
+    // The check gates a refusal that protects a founder's whole turn, so a path
+    // that merely starts with the same letters must not slip through it.
+    assert.equal(isUploadPath('voice-samples-old/x.md'), false);
   });
 });

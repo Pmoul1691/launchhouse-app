@@ -198,7 +198,19 @@ export function FileView({ founder, name }: { readonly founder: Founder; readonl
               {raw ? "Show it tidied up" : "Show it exactly as it is"}
             </button>
           </div>
-          {raw ? (
+          {isBinaryName(name) ? (
+            /*
+             * A PDF or a photo the founder uploaded. Everything below this line
+             * assumes text: the fetch decodes the body as UTF-8 and the markdown
+             * parser reads it as prose, so a PDF shown here is a screen of
+             * mojibake that reads as the file being corrupted. It is not. Say
+             * what it is, and the Download button above already works.
+             */
+            <p className="lede">
+              This is a file you added. It cannot be shown here, and it is not damaged. Use
+              Download above to open it on your own machine. Your engines can read it where it is.
+            </p>
+          ) : raw ? (
             <pre className="raw">{text}</pre>
           ) : isCsvName(name) ? (
             <CsvView rows={parseCsv(text)} />
@@ -298,4 +310,16 @@ export function HandingItToClaude({ track }: { readonly track: Founder["track"] 
       </p>
     </details>
   );
+}
+
+/**
+ * A file whose bytes are not text, so nothing on this screen can render it.
+ *
+ * Read from the name rather than from a content type, because the name is what the
+ * list already has, and a founder's own uploads are the only files here that are
+ * ever binary. The server decides what may be uploaded. This only decides what can
+ * be shown.
+ */
+function isBinaryName(name: string): boolean {
+  return /\.(pdf|png|jpe?g|gif|webp)$/i.test(name);
 }

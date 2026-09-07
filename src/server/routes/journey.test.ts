@@ -322,7 +322,7 @@ test('THE PARTS THAT ARE NOT BUILT SAY SO, AND SAY IT IN WORDS A FOUNDER CAN ACT
 
   await typeThePassphrase(h, jar);
 
-  const { connectGhl, saveVoiceSample } = await import('../../web/lib/api.ts');
+  const { connectGhl, uploadFile } = await import('../../web/lib/api.ts');
 
   // THE GOHIGHLEVEL HALF OF THIS TEST CHANGED ON 31 AUGUST, when the check got built.
   // It used to assert a 501 saying "bring it to the clinic". What it asserts now is the
@@ -342,10 +342,20 @@ test('THE PARTS THAT ARE NOT BUILT SAY SO, AND SAY IT IN WORDS A FOUNDER CAN ACT
     assert.doesNotMatch(connected.problem.text, /[–—]/, 'house style: no dashes');
   }
 
-  const sample = await saveVoiceSample('sample.md', 'a long paste');
-  assert.equal(sample.ok, false);
-  if (!sample.ok) {
-    assert.equal(sample.problem.kind, 'not_built_yet');
-    assert.match(sample.problem.text, /Nothing you have made is affected/);
+  // THE UPLOAD HALF CHANGED THE SAME WAY, and later. It used to assert a 501 saying to
+  // send the sample as messages instead. Uploads are built now, so what it asserts is the
+  // property that replaced it: a founder who hands over the file they actually have, which
+  // is a Word document, is told what to do about it rather than told a type is wrong.
+  const word = await uploadFile(new File([new Uint8Array([1, 2, 3])], 'my notes.docx'));
+  assert.equal(word.ok, false, 'a .docx was accepted, and the model cannot read one');
+  if (!word.ok) {
+    assert.notEqual(word.problem.kind, 'server', 'the wrong file type is not our crash');
+    assert.match(word.problem.text, /Save As/, 'it has to name the way out, not the rule');
+    assert.doesNotMatch(word.problem.text, /[\u2013\u2014]/, 'house style: no dashes');
   }
+
+  // And the file they should have brought goes in.
+  const ok = await uploadFile(new File([new TextEncoder().encode('# a real sample')], 'sample.md'));
+  assert.equal(ok.ok, true, 'a markdown sample was refused');
+  if (ok.ok) assert.equal(ok.value.path, 'voice-samples/sample.md');
 });

@@ -173,6 +173,20 @@ export interface ConnectionRow {
   readonly accounts: string | null;
 }
 
+/**
+ * What saving one upload did, said in terms the route can turn into a sentence.
+ *
+ * A union rather than a throw, because every one of these is an ordinary thing a
+ * founder does and none of them is a fault. "That file is too big" is not an
+ * exception, it is an answer.
+ */
+export type UploadOutcome =
+  | { readonly ok: true; readonly path: string; readonly sizeBytes: number }
+  | { readonly ok: false; readonly reason: 'turn_in_flight' }
+  | { readonly ok: false; readonly reason: 'too_large'; readonly limitBytes: number }
+  | { readonly ok: false; readonly reason: 'folder_full'; readonly limit: number }
+  | { readonly ok: false; readonly reason: 'no_room'; readonly limitBytes: number };
+
 export interface AppStore {
   listThreads(founderId: string): Promise<readonly ThreadRow[]>;
   /** Founder scoped. A thread belonging to somebody else is null, never a row. */
@@ -206,6 +220,33 @@ export interface AppStore {
    * handler that stops somebody else's run.
    */
   findActiveTurn(founderId: string, threadId: string): Promise<TurnRow | null>;
+  /**
+   * Is ANY turn of this founder's queued or running, on any thread.
+   *
+   * findActiveTurn above answers per thread, because a browser reconnecting wants
+   * the turn it was watching. This one answers for the founder, because the
+   * uploads route has to know whether a model run is in flight anywhere before it
+   * writes a ge_file row outside a turn. A per thread answer would say no while
+   * the founder's other tab was mid interview.
+   */
+  hasLiveTurn(founderId: string): Promise<boolean>;
+  /**
+   * Save one file the founder uploaded, into voice-samples/.
+   *
+   * THE ONLY WRITE TO ge_file THAT IS NOT A HARVEST, and it is deliberate rather
+   * than a shortcut. What it does NOT do is the thing the old 501 stub said was
+   * required: it never materialises the folder, never writes to disk and never
+   * harvests. It writes the record and bumps the version, which invalidates the
+   * epoch, so the next turn rebuilds the folder and the file appears there the
+   * way every other file does. No disk, no lock, no race with ge.
+   *
+   * The version bump carries the same optimistic check commitTurn uses, so a turn
+   * that commits between this read and this write takes the row and this refuses.
+   */
+  saveUpload(
+    founderId: string,
+    file: { name: string; bytes: Buffer },
+  ): Promise<UploadOutcome>;
 
   /**
    * The last event a reconnecting browser already has, which is the highest

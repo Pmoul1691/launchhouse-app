@@ -28,7 +28,9 @@ Ten seconds.
 
 ## 3. Get a Replit account
 
-The app runs on Replit. Go to replit.com, sign up, and take the **Core** plan at 20 USD/month.
+The app runs on Replit. Go to replit.com and sign up. You need the **Core** plan.
+
+**Do not pay for it yet.** Oneday is on Replit's partner programme, so we can get you Core for free. Ask in Slack before you put a card in. It is 20 USD a month if you buy it yourself.
 
 You need the paid plan because the free one cannot keep an app running on its own, and yours has to stay up between sessions.
 
@@ -187,7 +189,7 @@ Only the first three are needed before Session 1. The rest arrive in the session
 
 | What | When | Cost |
 |---|---|---|
-| Replit Core | **Before Session 1** | 20 USD/month. Runs your app |
+| Replit Core | **Before Session 1** | **Free.** Ask in Slack and we sort it through Oneday's partner programme. 20 USD/month otherwise. Runs your app |
 | Keeping your app running | **Before Session 1** | From 15 USD/month. Set at the size your app needs when you publish it, and we do this together |
 | Anthropic API credit | **Before Session 1** | Billed by what you use. Put roughly 20 USD on to start and top it up when it runs low |
 | A domain, B2B only | Session 1 | Roughly 15 USD/year. You can buy it through Apollo in the session, which is the simplest route because it connects itself |

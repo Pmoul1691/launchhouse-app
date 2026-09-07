@@ -239,6 +239,27 @@ function post<T>(path: string, body?: unknown): Promise<Result<T>> {
   return request<T>(path, "an answer", { method: "POST", body: JSON.stringify(body ?? {}) });
 }
 
+/**
+ * A write whose body is raw bytes rather than JSON.
+ *
+ * `accept` and `content-type` are spelled out because request() builds a headers
+ * object and then spreads init over it, so a headers key here REPLACES that object
+ * rather than merging into it. Without the accept, a refusal comes back as something
+ * the parser cannot read.
+ *
+ * It is a named helper and not an inline request() call so that contract.test.ts can
+ * see it. That test reads this file for the addresses the browser asks for, and it
+ * knows the helpers by name; a route reached any other way is a route it reports as
+ * dead and somebody deletes.
+ */
+function postBytes<T>(path: string, body: Blob | string, headers: Record<string, string>): Promise<Result<T>> {
+  return request<T>(path, "an answer", {
+    method: "POST",
+    headers: { accept: "application/json", ...headers },
+    body,
+  });
+}
+
 /** A write with nothing to read back. It worked or it did not. */
 function postVoid(path: string, body?: unknown): Promise<Result<void>> {
   return request<void>(path, "nothing", { method: "POST", body: JSON.stringify(body ?? {}) });
@@ -677,15 +698,38 @@ export function streamUrl(threadId: string): string {
 }
 
 /**
- * A pasted sample, saved as a file instead of sent as a message.
+ * What a founder may hand the app, and it is shorter than they will expect.
  *
- * ASSUMED path. Section 4 names the behaviour and not the route: the composer caps a paste
- * at roughly 50 KB and offers to attach it as a file, samples land in
- * `growth-engine/voice-samples/`, and the model reads them with the Read tool. That keeps
- * the context small and makes the sample the founder's own downloadable property.
+ * MEASURED AGAINST THE MODEL'S OWN Read TOOL rather than chosen. Word documents are
+ * refused by Read outright, and `.heic`, which is what an iPhone saves by default, is
+ * refused by neither of its lists and is read as text, which is worse than a refusal
+ * because nothing says anything. Both are refused here, at the point the founder picks
+ * the file, so they find out before the upload rather than after.
  */
-export function saveVoiceSample(name: string, text: string): Promise<Result<{ readonly path: string }>> {
-  return post<{ readonly path: string }>("/api/files/voice-samples", { name, text });
+export const UPLOAD_ACCEPT = ".txt,.md,.csv,.pdf,.png,.jpg,.jpeg,.gif,.webp";
+
+/** Kept in step with LIMIT_FILE_BYTES on the server, which is the one that decides. */
+export const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * One of the founder's own files, saved into `growth-engine/voice-samples/`.
+ *
+ * RAW BYTES, NOT FormData, and the server side says why: multipart would cost a
+ * dependency in a tree 130 people `npm ci`. One file per request needs no envelope, so
+ * the body is the file and the name rides in a header.
+ *
+ * The name is encoded because it is the founder's own, and an apostrophe or an accent in
+ * a header is the ordinary case rather than the strange one.
+ */
+export function uploadFile(file: File): Promise<Result<{ readonly path: string; readonly sizeBytes: number }>> {
+  return postBytes<{ readonly path: string; readonly sizeBytes: number }>(
+    "/api/files/voice-samples",
+    file,
+    {
+      "content-type": "application/octet-stream",
+      "x-upload-name": encodeURIComponent(file.name),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------------------
