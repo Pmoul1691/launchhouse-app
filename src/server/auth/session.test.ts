@@ -28,6 +28,7 @@ import {
   endSession,
   mintSession,
   readSession,
+  sessionCookiePolicyFor,
   sessionIdFor,
   slideSession,
   type SessionConfig,
@@ -39,6 +40,8 @@ const CFG: SessionConfig = {
   cookieName: 'lh_session',
   ttlDays: 90,
   secure: true,
+  sameSite: 'lax',
+  partitioned: false,
   bindingSecret: TEST_PASSPHRASE,
 };
 const DAY = 86_400_000;
@@ -196,4 +199,79 @@ test('CHANGING THE PASSPHRASE SIGNS EVERY DEVICE OUT, INCLUDING A STRANGER WHO A
   await store.insertSession(fresh.row);
   assert.equal((await readSession(store, fresh.cookieValue, after, clock)).ok, true);
   assert.equal((await readSession(store, fresh.cookieValue, CFG, clock)).ok, false, 'and not under the old one');
+});
+
+/**
+ * THE PREVIEW IS A CROSS SITE IFRAME, AND A LAX COOKIE IS NEVER SENT ON ONE.
+ *
+ * This is the bug a tester reported as "the app resets in the Replit preview".
+ * Nothing was reset. The founder signed in, the browser followed the redirect,
+ * and that request carried no cookie because Lax withholds it from an iframe
+ * on another site. The app correctly said sign in again, for ever.
+ *
+ * The preview is where founders are told to work, so this is the surface that
+ * has to work, not the one that can be worked around.
+ */
+test('THE WORKSPACE PREVIEW GETS A COOKIE THE PREVIEW CAN ACTUALLY SEND', () => {
+  const workspace = sessionCookiePolicyFor('https://launchhouse-phil.replit.dev');
+  assert.equal(workspace.sameSite, 'none', 'or the preview iframe never sends it back');
+  assert.equal(workspace.partitioned, true, 'which is what keeps another site from using it');
+  assert.equal(workspace.secure, true, 'None without Secure is dropped by every browser');
+});
+
+test('A DEPLOYMENT AND A LAPTOP KEEP LAX, SO NOTHING ELSE CHANGED', () => {
+  for (const url of [
+    'https://launchhouse-phil.replit.app',
+    'https://growth.afoundersdomain.com',
+  ]) {
+    const p = sessionCookiePolicyFor(url);
+    assert.equal(p.sameSite, 'lax', `${url} is opened as a page, not embedded`);
+    assert.equal(p.partitioned, false, url);
+    assert.equal(p.secure, true, url);
+  }
+
+  // A laptop on http. Secure here is a developer who can never sign in, and
+  // None and Partitioned are both refused without it.
+  const laptop = sessionCookiePolicyFor('http://localhost:5000');
+  assert.deepEqual(laptop, { secure: false, sameSite: 'lax', partitioned: false });
+});
+
+/**
+ * The three attributes are only valid in certain combinations, and a browser
+ * that dislikes the combination drops the cookie in silence. There is no error
+ * anywhere. There is just a founder who cannot sign in. So the invariant is
+ * asserted rather than trusted.
+ */
+test('NONE AND PARTITIONED ARE NEVER WRITTEN WITHOUT SECURE', () => {
+  for (const url of [
+    'https://x.replit.dev',
+    'https://x.replit.app',
+    'http://localhost:5000',
+    'http://x.replit.dev',
+    'not a url at all',
+    '',
+  ]) {
+    const p = sessionCookiePolicyFor(url);
+    if (p.sameSite === 'none' || p.partitioned) {
+      assert.equal(p.secure, true, `${url} produced a combination no browser accepts`);
+    }
+  }
+});
+
+test('AN ADDRESS THAT CANNOT BE PARSED FALLS BACK TO WHAT THIS APP ALWAYS DID', () => {
+  const broken = sessionCookiePolicyFor('https://');
+  assert.equal(broken.sameSite, 'lax');
+  assert.equal(broken.partitioned, false);
+});
+
+test('THE COOKIE CARRIES WHATEVER THE POLICY DECIDED', () => {
+  const embedded = cookieOptionsFor({ ...CFG, sameSite: 'none', partitioned: true });
+  assert.equal(embedded.sameSite, 'none');
+  assert.equal(embedded.partitioned, true);
+  assert.equal(embedded.httpOnly, true, 'still unreachable from a script');
+  assert.equal(embedded.path, '/');
+
+  const normal = cookieOptionsFor(CFG);
+  assert.equal(normal.sameSite, 'lax');
+  assert.equal(normal.partitioned, false);
 });
