@@ -41,6 +41,17 @@ If they are hesitating, leave it where it is. They can come back to it, and a tr
 
 Ask these in small groups, not all at once. Three or four questions per turn. Reflect back what you heard before moving on. This should feel like a conversation with a sharp consultant, not a form.
 
+**Say where they are, every single turn.** Open each group by naming the stage
+and the count, like `Part 2 of 6: the track fork`. The six are the business, the
+track fork, the audience, the offer and proof, the channels, then the voice.
+When you finish the last one, say you are writing the file.
+
+This is not decoration. A founder who cannot see the end of a conversation does
+not know whether to give you a quick answer or a careful one, and the ones who
+guess wrong give you thin answers early and then run out of patience at the
+voice, which is the part everything else is built on. Knowing they are two
+thirds of the way through costs you one line and changes what they give you.
+
 ### Group 1: the business
 
 1. What is the business called, and what does it sell?

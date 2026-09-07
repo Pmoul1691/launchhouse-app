@@ -51,7 +51,7 @@ never sees the other track's rows.
 | inbound-scripts.md | gate C | b2c | 2 |
 | ops-workflow.md | gate C | both | 2 |
 | 90-day-plan.md | - | both | the weekend |
-| playbook-insert.md | - | both | before the print deadline |
+| playbook-insert.md | - | both | 3 |
 | ledger.md | - | both | any |
 | memory.md | - | both | any |
 | ops-log.md | - | both | any |

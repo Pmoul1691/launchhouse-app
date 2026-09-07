@@ -1,6 +1,6 @@
 ---
 name: playbook-export
-description: Generate the founder's personalised playbook insert, which prints alongside the generic Growth Engine playbook body. Run before the print deadline. Trigger on "generate my playbook", "playbook insert", "print my playbook".
+description: Generate the founder's personalised playbook insert, which is delivered as a PDF alongside the generic Growth Engine playbook body. Run it as session 3 homework. Trigger on "generate my playbook", "playbook insert", "print my playbook".
 ---
 
 # Playbook Export

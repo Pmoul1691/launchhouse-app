@@ -28,7 +28,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify, { type FastifyInstance } from 'fastify';
 
-import { createAuth, type AuthContext } from './plugin.ts';
+import { createAuth, crossSiteWrite, type AuthContext } from './plugin.ts';
 import { DEFAULT_ATTEMPT_LIMIT } from './rate-limit.ts';
 import {
   MemoryAuthStore,
@@ -54,7 +54,9 @@ interface Harness {
   readonly log: TestLogger;
 }
 
-async function harness(opts: { passphrase?: string } = {}): Promise<Harness> {
+async function harness(
+  opts: { passphrase?: string; embedded?: boolean } = {},
+): Promise<Harness> {
   const store = new MemoryAuthStore();
   const clock = new TestClock();
   const sleep = new RecordingSleep();
@@ -68,7 +70,18 @@ async function harness(opts: { passphrase?: string } = {}): Promise<Harness> {
     passphrase: opts.passphrase ?? TEST_PASSPHRASE,
     // secure false, because a laptop on http would never be sent a Secure
     // cookie back and the developer would conclude sign in is broken.
-    cookie: { name: 'lh_session', ttlDays: 90, secure: false },
+    cookie: {
+      name: 'lh_session',
+      ttlDays: 90,
+      // The preview is always https, and None and Partitioned are both refused
+      // by browsers without Secure, so the embedded harness has to be honest
+      // about that or it proves a combination nobody can actually receive.
+      secure: opts.embedded === true,
+      // The workspace preview, where Lax cannot be used and the Origin guard is
+      // therefore the only thing standing in for it.
+      sameSite: opts.embedded === true ? 'none' : 'lax',
+      partitioned: opts.embedded === true,
+    },
     sleep: sleep.fn,
     cookieSecret: 'c'.repeat(32),
   });
@@ -415,4 +428,130 @@ test('A LINK CARRYING A NOTICE CANNOT PUT WORDS ON THE SIGN IN SCREEN', async ()
   const real = await h.app.inject({ method: 'GET', url: '/auth/signin?notice=signed_out', headers: BROWSER });
   assert.match(real.body, /You are signed out on this device/);
   await h.app.close();
+});
+
+/**
+ * THE GUARD THAT REPLACES SameSite=Lax WHERE LAX CANNOT BE USED.
+ *
+ * The preview iframe forces SameSite=None, and Lax was this app's entire CSRF
+ * defence. These prove the replacement refuses what Lax refused, and, just as
+ * importantly, that it does not refuse anything a founder does. A guard that
+ * locks 130 founders out of their own app on a Friday is worse than the attack
+ * it prevents, so the allow cases are tested as hard as the refusals.
+ */
+test('A WRITE FROM ANOTHER SITE IS REFUSED', () => {
+  assert.equal(
+    crossSiteWrite('POST', 'https://evil.example', 'launchhouse-phil.replit.dev'),
+    true,
+  );
+  assert.equal(
+    crossSiteWrite('DELETE', 'https://evil.example', 'launchhouse-phil.replit.dev'),
+    true,
+  );
+  // A sandboxed iframe is the one way a real browser sends a cross site write
+  // without naming who sent it.
+  assert.equal(crossSiteWrite('POST', 'null', 'launchhouse-phil.replit.dev'), true);
+});
+
+test('THE FOUNDER IN THE PREVIEW IS NOT REFUSED', () => {
+  // The app's own page, inside the iframe, posting to itself. The Origin is the
+  // app, not replit.com, because the Origin of a request is whoever sent it.
+  assert.equal(
+    crossSiteWrite('POST', 'https://launchhouse-phil.replit.dev', 'launchhouse-phil.replit.dev'),
+    false,
+  );
+  // Case is not significant in a host name and a browser may not match ours.
+  assert.equal(
+    crossSiteWrite('POST', 'https://Launchhouse-Phil.Replit.dev', 'launchhouse-phil.replit.dev'),
+    false,
+  );
+});
+
+test('READING IS NEVER REFUSED, WHOEVER ASKS', () => {
+  for (const method of ['GET', 'HEAD', 'OPTIONS', 'get', 'head']) {
+    assert.equal(crossSiteWrite(method, 'https://evil.example', 'app.replit.dev'), false, method);
+  }
+});
+
+test('A REQUEST WITH NO ORIGIN IS ALLOWED, BECAUSE CSRF NEEDS A BROWSER', () => {
+  // Browsers send Origin on every POST. No Origin means a script, a probe, a
+  // health check or the test client, and none of those is a founder's browser
+  // being used against them. Refusing here buys nothing and breaks tooling.
+  assert.equal(crossSiteWrite('POST', undefined, 'app.replit.dev'), false);
+  assert.equal(crossSiteWrite('POST', '', 'app.replit.dev'), false);
+});
+
+test('AN UNREADABLE HOST OR ORIGIN FAILS OPEN RATHER THAN LOCKING ANYBODY OUT', () => {
+  assert.equal(crossSiteWrite('POST', 'http://[', 'app.replit.dev'), false, 'unparseable origin');
+  assert.equal(crossSiteWrite('POST', 'https://app.replit.dev', undefined), false, 'no host header');
+  assert.equal(crossSiteWrite('POST', 'https://app.replit.dev', ''), false, 'empty host header');
+});
+
+/**
+ * The guard, through the whole stack rather than as arithmetic.
+ *
+ * The function above is pure and easy to get right. The wiring is where this
+ * would actually fail: a guard placed below the /auth/ exemption protects
+ * everything except the two routes most worth attacking.
+ */
+test('THE ORIGIN GUARD RUNS, AND IT COVERS SIGN IN AND SIGN OUT TOO', async () => {
+  const h = await harness({ embedded: true });
+
+  for (const url of ['/auth/signin', '/auth/signout']) {
+    const res = await h.app.inject({
+      method: 'POST',
+      url,
+      headers: { ...FORM, origin: 'https://evil.example', host: 'app.replit.dev' },
+      payload: form({ passphrase: TEST_PASSPHRASE }),
+    });
+    assert.equal(res.statusCode, 403, `${url} was reachable from another site`);
+    assert.equal(
+      res.cookies.find((c) => c.name === 'lh_session' && c.value !== ''),
+      undefined,
+      `${url} handed a session to another site`,
+    );
+  }
+});
+
+test('AND THE SAME REQUEST FROM THE APP ITSELF STILL SIGNS SOMEBODY IN', async () => {
+  const h = await harness({ embedded: true });
+  const res = await h.app.inject({
+    method: 'POST',
+    url: '/auth/signin',
+    headers: { ...FORM, origin: 'https://app.replit.dev', host: 'app.replit.dev' },
+    payload: form({ passphrase: TEST_PASSPHRASE }),
+  });
+  assert.equal(res.statusCode, 303, 'a founder in the preview was refused by our own guard');
+
+  const cookie = res.cookies.find((c) => c.name === 'lh_session');
+  assert.ok(cookie !== undefined, 'no session cookie was set');
+
+  /**
+   * THE RAW HEADER, not the parsed object.
+   *
+   * These three attributes are only accepted together, and a browser that
+   * dislikes the combination drops the cookie without saying anything. There is
+   * no error to catch and no log line to find. There is only a founder who
+   * cannot stay signed in, which is the bug this whole change exists to fix, so
+   * the wire format is asserted rather than assumed.
+   */
+  const header = res.headers['set-cookie'];
+  const raw = Array.isArray(header) ? header.join('\n') : String(header);
+  assert.match(raw, /SameSite=None/i, 'the preview iframe cannot send a Lax cookie');
+  assert.match(raw, /Partitioned/i, 'without this, any site could embed the app and use the session');
+  assert.match(raw, /Secure/i, 'None and Partitioned are both refused without Secure');
+  assert.match(raw, /HttpOnly/i, 'still unreachable from a script');
+});
+
+test('ON EVERY OTHER DEPLOYMENT THE GUARD IS INERT, BECAUSE LAX ALREADY REFUSED', async () => {
+  const h = await harness();
+  const res = await h.app.inject({
+    method: 'POST',
+    url: '/auth/signin',
+    headers: { ...FORM, origin: 'https://evil.example', host: 'app.replit.app' },
+    payload: form({ passphrase: TEST_PASSPHRASE }),
+  });
+  // Not 403. The browser never sent the cookie in the first place, and adding a
+  // second refusal here would change behaviour nobody asked to change.
+  assert.equal(res.statusCode, 303);
 });

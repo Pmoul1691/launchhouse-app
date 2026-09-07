@@ -208,7 +208,7 @@ async function buildThrowingApp(): Promise<ThrowingApp> {
      * deployment that was refusing everything for a different reason.
      */
     passphrase: TEST_PASSPHRASE,
-    cookie: { name: 'lh_session', ttlDays: 90, secure: false },
+    cookie: { name: 'lh_session', ttlDays: 90, secure: false, sameSite: 'lax', partitioned: false },
     // The wrong passphrase path waits on purpose. Recording the wait instead of
     // taking it keeps this file fast without turning the guard off.
     sleep: () => Promise.resolve(),

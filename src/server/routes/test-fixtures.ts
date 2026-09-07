@@ -567,7 +567,7 @@ export async function buildHarness(options: HarnessOptions = {}): Promise<Harnes
     passphrase: TEST_PASSPHRASE,
     // secure: false, because a test client does not speak https and a Secure
     // cookie would never come back. env.ts forces https in prod, where it matters.
-    cookie: { name: 'lh_session', ttlDays: 90, secure: false },
+    cookie: { name: 'lh_session', ttlDays: 90, secure: false, sameSite: 'lax', partitioned: false },
     // Records instead of waiting. A wrong passphrase is deliberately slowed
     // down, and a suite that actually waited for it is a suite somebody deletes.
     sleep: new RecordingSleep().fn,

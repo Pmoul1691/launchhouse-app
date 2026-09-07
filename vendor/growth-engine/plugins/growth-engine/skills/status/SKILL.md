@@ -17,7 +17,7 @@ If you cannot find it, ask the founder where they built it. Do not assume they h
 
 Read whatever exists and report against this checklist. Show track first, because the checklist branches.
 
-| File | Gate | Session |
+| File | What it has to contain | Session |
 |---|---|---|
 | founder-brain.md | Brain locked, thesis written | 1 |
 | content-30.md and content-30.csv | 30 pieces generated and edited | 2 |
@@ -25,10 +25,25 @@ Read whatever exists and report against this checklist. Show track first, becaus
 | outreach-sequence.md, outreach-firstlines.csv | B2B: sequence approved, list criteria defined, list built, first lines for the first 25 | 3 |
 | dm-openers.md, hook-bank.md, inbound-scripts.md | B2C: 25 openers, hook bank with offer tests, inbound scripts | 3 |
 | ops-workflow.md | Bottleneck named, snapshot chosen, copy written | 3 |
-| 90-day-plan.md | Built in Atlanta on Sunday | Weekend |
-| playbook-insert.md | Generated before the print deadline | Pre-Atlanta |
+| 90-day-plan.md | The number, Monday's three actions, kill criteria | Weekend |
+| playbook-insert.md | Brain, content, engine 2, ops and 90 day plan, gathered into one document | 3 |
+
+Every row says what the file has to contain, not when it is due. That is what
+lets you tell a founder whether a file counts, and it is the second column for
+that reason.
 
 Also check the Brain's Flags section and surface anything unresolved, particularly domain warmup status for B2B and Instagram account type for B2C.
+
+## A file you cannot account for
+
+The checklist above is the whole list. If the folder holds something that is not
+on it, say what you can see and move on.
+
+Never ask the founder to explain what one of their own files is for, and never
+offer them a list of things it might have been. They opened this to be told
+where they stand. A file this skill cannot name is this skill's gap, not their
+homework, and guessing at it in front of them turns a status check into a
+question they cannot answer.
 
 ## Be direct
 

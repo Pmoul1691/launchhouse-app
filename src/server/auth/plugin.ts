@@ -84,6 +84,14 @@ export interface AuthPluginOptions {
     readonly ttlDays: number;
     /** True when APP_BASE_URL is https. A Secure cookie over http is never sent back. */
     readonly secure: boolean;
+    /**
+     * 'none' on the Replit workspace preview, 'lax' everywhere else. Both this
+     * and `partitioned` come from `sessionCookiePolicyFor` in ./session.ts, which
+     * is the only thing allowed to decide them, because the three attributes are
+     * only valid in certain combinations.
+     */
+    readonly sameSite: 'lax' | 'none';
+    readonly partitioned: boolean;
   };
   readonly limits?: AttemptLimitConfig;
   /** Injected so a test can prove the slow down happened without waiting for it. */
@@ -129,6 +137,20 @@ export class NotSignedIn extends Error {
 }
 
 /** The sentence a browser or the bundle is given when there is no session. */
+/**
+ * The only page a refused cross site write ever produces.
+ *
+ * Deliberately says nothing about what this app is or whether the address
+ * exists. Whoever is reading it is not the founder.
+ */
+const CROSS_SITE_PAGE = [
+  '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+  '<title>Not carried out</title></head><body>',
+  '<h1>Not carried out</h1>',
+  '<p>That request came from another site.</p>',
+  '</body></html>',
+].join('');
+
 const NOT_SIGNED_IN = {
   error: 'not_signed_in',
   message: 'Sign in again to carry on. Nothing you have made is affected.',
@@ -153,6 +175,53 @@ function wantsHtml(request: FastifyRequest): boolean {
 function pathOf(url: string): string {
   const q = url.indexOf('?');
   return q === -1 ? url : url.slice(0, q);
+}
+
+/** Methods that do not change anything, so no Origin check applies to them. */
+const SAFE_METHODS: readonly string[] = ['GET', 'HEAD', 'OPTIONS'];
+
+/**
+ * Is this a state changing request that arrived from another site?
+ *
+ * WHY THIS EXISTS AT ALL. `SameSite=Lax` was this app's whole CSRF defence, and
+ * the workspace preview cannot use Lax: see ./session.ts. So on the surface
+ * where Lax is given up, the defence is replaced here rather than dropped.
+ *
+ * WHAT IT COMPARES. The `Origin` header against the host the request was
+ * actually sent to. Not against APP_BASE_URL. If APP_BASE_URL is ever derived
+ * to something other than the address the founder is on, comparing against it
+ * would refuse every request that founder makes and lock them out of their own
+ * app. Comparing the request against itself cannot do that.
+ *
+ * WHERE IT DELIBERATELY DOES NOT REFUSE. A request with no `Origin` at all is
+ * allowed. Browsers send `Origin` on every POST, so a missing one means a
+ * script, a probe or the test client, none of which is a founder's browser
+ * being used against them. That is the whole trick CSRF depends on and it needs
+ * a browser. Refusing here would buy nothing and would break tooling.
+ *
+ * `Origin: null` IS refused, because a sandboxed iframe is the one way an
+ * attacker can make a real browser send a cross site write without naming
+ * itself, and nothing in this app produces it.
+ */
+export function crossSiteWrite(
+  method: string,
+  origin: string | undefined,
+  host: string | undefined,
+): boolean {
+  if (SAFE_METHODS.includes(method.toUpperCase())) return false;
+  if (typeof origin !== 'string' || origin === '') return false;
+  if (origin === 'null') return true;
+
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host.toLowerCase();
+  } catch {
+    // A browser cannot produce this. Something that is not a browser can, and
+    // it is not the thing this guard is for.
+    return false;
+  }
+  if (typeof host !== 'string' || host === '') return false;
+  return originHost !== host.toLowerCase();
 }
 
 /**
@@ -202,6 +271,8 @@ export function createAuth(opts: AuthPluginOptions): {
     cookieName: opts.cookie.name,
     ttlDays: opts.cookie.ttlDays,
     secure: opts.cookie.secure,
+    sameSite: opts.cookie.sameSite,
+    partitioned: opts.cookie.partitioned,
     bindingSecret: opts.passphrase,
   };
 
@@ -330,6 +401,30 @@ export function createAuth(opts: AuthPluginOptions): {
         return await reply.send({
           error: 'not_set_up',
           message: 'This deployment has no usable OWNER_PASSPHRASE. Set it in Replit Secrets, then redeploy.',
+        });
+      }
+
+      /**
+       * Cross site writes, refused on the deployments that cannot use Lax.
+       *
+       * ABOVE the /auth/ exemption on purpose. Sign in and sign out are the two
+       * routes most worth attacking and they live under that prefix, so a guard
+       * placed below it would protect everything except them.
+       *
+       * Costs nothing and changes nothing where sameSite is 'lax', which is
+       * every deployment and every laptop. There, the browser has already
+       * withheld the cookie and this never fires.
+       */
+      if (session.sameSite === 'none' && crossSiteWrite(request.method, request.headers.origin, request.headers.host)) {
+        opts.log.warn(
+          { path, method: request.method, origin: request.headers.origin },
+          'refused a cross site write',
+        );
+        if (wantsHtml(request)) return html(reply, 403, CROSS_SITE_PAGE);
+        reply.code(403);
+        return await reply.send({
+          error: 'cross_site',
+          message: 'That request came from another site and was not carried out.',
         });
       }
 

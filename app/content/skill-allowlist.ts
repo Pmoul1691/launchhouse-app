@@ -442,6 +442,26 @@ export const PORT_ALLOWLIST: readonly AllowRule[] = [
     added: [],
   },
   {
+    skill: "status",
+    group: "C",
+    why:
+      "The row stays on the app's checklist, because the insert is real work a founder " +
+      "does at session 3 and hiding it would be the first they hear of it. What the app " +
+      "adds is where it gets made. routes.ts has playbook-export at hidden: true, not " +
+      "built in v1.0, so there is no engine here to send anybody to, and the plugin's " +
+      "/growth-engine:playbook is what actually writes it in Claude. Without these two " +
+      "paragraphs the engine reads a file it cannot produce and tries to help: a tester's " +
+      "run asked him to explain his own file and offered five guesses at what it might be",
+    times: 1,
+    removed: [],
+    added: [
+      "**playbook-insert.md is not made in this app.** It is generated in Claude at session 3, out of the files above. A founder cannot build it here and there is no engine to send them to.",
+      "",
+      "So when it is missing, that is expected. Say it is made later, in Claude, and move on. Do not offer to write it, do not ask what it is for, and do not count it against them.",
+      "",
+    ],
+  },
+  {
     skill: "playbook-export",
     group: "A",
     why:

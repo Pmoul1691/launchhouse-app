@@ -52,6 +52,8 @@ function build(passphrase: string = TEST_PASSPHRASE, store = new MemoryAuthStore
     cookieName: 'lh_session',
     ttlDays: 90,
     secure: true,
+    sameSite: 'lax',
+    partitioned: false,
     bindingSecret: passphrase,
   };
   const attempts = new SigninAttempts(DEFAULT_ATTEMPT_LIMIT, clock);

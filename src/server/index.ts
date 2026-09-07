@@ -155,6 +155,7 @@ import { closeDb, getDb, type Db } from './db/client.ts';
 import { assertGeInstalled, assertGeInterface, runGe } from './ge/run.ts';
 import { assertContractsReady, FEATURES_ON } from './integrations/contracts/index.ts';
 import { createAuth } from './auth/plugin.ts';
+import { sessionCookiePolicyFor } from './auth/session.ts';
 import { PgAuthStore } from './auth/store-pg.ts';
 import { ensureMasterKey, type MasterKeyOutcome } from './boot/master-key.ts';
 import { resolvePlatformCli, type PlatformCliOutcome } from './boot/platform-cli.ts';
@@ -417,13 +418,19 @@ export async function buildServer(options: BuildOptions): Promise<BuiltServer> {
     clock: { now: () => new Date() },
     log: logger,
     passphrase: env.OWNER_PASSPHRASE,
-    // A Secure cookie over http is never sent back, so a laptop on http could
-    // never sign in. env.ts warns when the base URL is not https, which is
-    // where Secure matters.
+    /**
+     * Secure, SameSite and Partitioned, all three from the one address.
+     *
+     * A Secure cookie over http is never sent back, so a laptop on http could
+     * never sign in. A Lax cookie is never sent from inside the Replit preview
+     * iframe, so a founder working there can never stay signed in. Both of those
+     * are decided by where this deployment answers, and auth/session.ts is the
+     * only place allowed to decide them.
+     */
     cookie: {
       name: env.SESSION_COOKIE_NAME,
       ttlDays: env.SESSION_TTL_DAYS,
-      secure: env.APP_BASE_URL.startsWith('https://'),
+      ...sessionCookiePolicyFor(env.APP_BASE_URL),
     },
     /**
      * Not the session secret. The session id is already derived from 32 random

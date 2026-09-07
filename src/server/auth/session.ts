@@ -24,6 +24,12 @@
  *   developer who can never sign in and concludes sign in is broken. Both are
  *   handled here, from APP_BASE_URL, rather than guessed per route.
  *
+ *   A Lax cookie is never sent from inside an iframe on another site, and the
+ *   Replit workspace preview is exactly that. A founder signs in, the app says
+ *   sign in again, and it reads as the app losing their work. `SameSite` and
+ *   `Partitioned` below are set from the address this deployment answers on,
+ *   which is the only thing that decides what the browser will do.
+ *
  *   AND THE ONE THIS FILE GAINED. Changing the passphrase has to sign every
  *   device out. Without that, a founder who thinks somebody got in changes
  *   OWNER_PASSPHRASE, is told the app is now safe, and the stranger's cookie
@@ -47,6 +53,37 @@ export interface SessionConfig {
   /** True when APP_BASE_URL is https. A Secure cookie over http is never sent back. */
   readonly secure: boolean;
   /**
+   * Lax everywhere except inside the Replit workspace preview, where it is None.
+   *
+   * WHY THIS IS NOT SIMPLY LAX, WHICH IS WHAT IT USED TO BE. The Replit preview
+   * renders the app in an iframe on replit.com while the app itself answers on
+   * a replit.dev address. Those are two different sites, so every request the
+   * preview makes is a cross site request, and a Lax cookie is never sent on
+   * one. The founder signs in, the browser follows the redirect, that request
+   * carries no cookie, and the app says sign in again. It looks like the app
+   * forgot them. Nothing was forgotten and nothing was lost: the cookie was
+   * never sent.
+   *
+   * That surface is not a corner case. It is where founders are told to work.
+   *
+   * Both values are set from one function, `sessionCookiePolicyFor`, so that
+   * None can never be written without Secure, which no browser accepts.
+   */
+  readonly sameSite: 'lax' | 'none';
+  /**
+   * CHIPS. The cookie is filed under the site that embeds it, not just ours.
+   *
+   * This is what buys back most of what None gives away. A cookie set inside
+   * the preview is filed under replit.com and is unreachable from any other
+   * page on the internet, so an attacker who embeds this app gets an empty jar
+   * rather than the founder's session.
+   *
+   * The visible consequence, and it is the right trade. The preview and the
+   * same app opened directly in a tab are two different jars, so signing in on
+   * one does not sign you in on the other. Founders sign in once per surface.
+   */
+  readonly partitioned: boolean;
+  /**
    * The secret every session id is derived with. Today this IS the owner
    * passphrase, and that is the point of it.
    *
@@ -67,7 +104,8 @@ export interface MintedSession {
   readonly cookieOptions: {
     readonly httpOnly: true;
     readonly secure: boolean;
-    readonly sameSite: 'lax';
+    readonly sameSite: 'lax' | 'none';
+    readonly partitioned: boolean;
     readonly path: '/';
     readonly maxAge: number;
   };
@@ -113,18 +151,69 @@ export function sessionIdFor(cookieValue: string, bindingSecret: string): string
   return sha256Hex(`${cookieValue}\n${bindingSecret}`);
 }
 
+/**
+ * The three cookie attributes that depend on where this deployment answers.
+ *
+ * WHY THEY ARE DERIVED TOGETHER AND NOT ONE AT A TIME. They are not
+ * independent. `SameSite=None` is rejected by every browser unless `Secure` is
+ * also set, and `Partitioned` is rejected unless both are. Three booleans set
+ * in three places is three chances to write a combination that browsers drop on
+ * the floor, and a dropped Set-Cookie does not raise anything. It just means
+ * nobody can sign in. One function, one input, one answer.
+ *
+ * THE RULE. A `replit.dev` address is the workspace, which is the surface the
+ * preview iframe shows and the surface founders are told to work on. Everything
+ * else, a deployment on `replit.app`, a custom domain, a laptop on localhost,
+ * is opened as a top level page and keeps Lax.
+ *
+ * Reading the host rather than asking which environment this is, because both
+ * REPLIT_DOMAINS and REPLIT_DEV_DOMAIN can be set in a workspace and the
+ * address itself is the thing that actually decides the browser's behaviour.
+ *
+ * An address that cannot be parsed falls back to Lax. That is the behaviour
+ * this app had before any of this existed, so the worst a malformed
+ * APP_BASE_URL can do is leave things exactly as they were.
+ */
+export interface SessionCookiePolicy {
+  readonly secure: boolean;
+  readonly sameSite: 'lax' | 'none';
+  readonly partitioned: boolean;
+}
+
+export function sessionCookiePolicyFor(baseUrl: string): SessionCookiePolicy {
+  const secure = baseUrl.startsWith('https://');
+  if (!secure) return { secure: false, sameSite: 'lax', partitioned: false };
+
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return { secure: true, sameSite: 'lax', partitioned: false };
+  }
+
+  const embedded = host === 'replit.dev' || host.endsWith('.replit.dev');
+  return embedded
+    ? { secure: true, sameSite: 'none', partitioned: true }
+    : { secure: true, sameSite: 'lax', partitioned: false };
+}
+
 export function cookieOptionsFor(cfg: SessionConfig): MintedSession['cookieOptions'] {
   return {
     httpOnly: true,
     secure: cfg.secure,
-    // Lax rather than Strict. Two reasons, and the second one is protection
-    // rather than convenience. Strict means the cookie is not sent on the
-    // navigation that follows the sign in POST, so a founder who has just
-    // signed in lands on the app signed out. And Lax already withholds the
-    // cookie on a cross site POST, which is what stops another page on the
-    // internet posting to /auth/signout or to an API route on the founder's
-    // behalf. That is this app's CSRF defence and it is one word.
-    sameSite: 'lax',
+    // Lax rather than Strict, on every surface that can use Lax at all. Strict
+    // means the cookie is not sent on the navigation that follows the sign in
+    // POST, so a founder who has just signed in lands on the app signed out.
+    // Lax already withholds the cookie on a cross site POST, which is what
+    // stops another page on the internet posting to /auth/signout or to an API
+    // route on the founder's behalf.
+    //
+    // WHERE THAT DEFENCE IS GIVEN UP, IT IS REPLACED RATHER THAN DROPPED. The
+    // preview needs None to work at all. `Partitioned` above keeps an embedding
+    // attacker out, and ../auth/plugin.ts refuses any unsafe method whose Origin
+    // is not this app on exactly the deployments where this reads 'none'.
+    sameSite: cfg.sameSite,
+    partitioned: cfg.partitioned,
     path: '/',
     maxAge: Math.floor((cfg.ttlDays * DAY_MS) / 1000),
   };
