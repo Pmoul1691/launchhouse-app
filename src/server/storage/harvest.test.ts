@@ -100,6 +100,52 @@ describe('diffFiles', () => {
     assert.equal((thrown as HarvestRefused).subject, 'people/sam-example-com.md');
   });
 
+  /**
+   * THE ONE EXCEPTION TO THE REFUSAL ABOVE, and it exists to protect the thing
+   * the refusal protects.
+   *
+   * The uploads route writes ge_file outside a turn, so one row can exist that
+   * this turn's materialise ran too early to see: the founder pressed upload
+   * while the model was working. Read as an unexplained absence, that costs them
+   * the entire run they were watching, and the file was never in danger.
+   *
+   * Its absence proves nothing, exactly as an excluded path's does, and the next
+   * rebuild writes it. The row is left alone: not deleted, not refused.
+   */
+  it('an upload materialise has not seen yet is expected, not data loss', () => {
+    const { changes } = diffFiles({
+      onDisk: [],
+      stored: storedMap([['voice-samples/sample.md', 'aaa']]),
+      materialisedPaths: new Set(),
+    });
+    assert.deepEqual(changes, [], 'the upload row must not be deleted either');
+  });
+
+  it('and the exception is only for that folder, so the refusal still works', () => {
+    // The whole value of the refusal is that it catches materialise losing a
+    // founder's file. A blanket tolerance would have removed it.
+    assert.throws(
+      () =>
+        diffFiles({
+          onDisk: [],
+          stored: storedMap([['founder-brain.md', 'aaa']]),
+          materialisedPaths: new Set(),
+        }),
+      HarvestRefused,
+      'the Brain going missing must still roll the turn back',
+    );
+    // And a folder whose name merely starts the same way is not the uploads folder.
+    assert.throws(
+      () =>
+        diffFiles({
+          onDisk: [],
+          stored: storedMap([['voice-samples-old/sample.md', 'aaa']]),
+          materialisedPaths: new Set(),
+        }),
+      HarvestRefused,
+    );
+  });
+
   it('refuses on the FIRST unexplained absence rather than deleting the rest', () => {
     assert.throws(() =>
       diffFiles({

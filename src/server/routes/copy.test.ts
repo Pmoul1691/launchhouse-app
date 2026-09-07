@@ -80,11 +80,31 @@ test('THE PARTS THAT ARE NOT BUILT SAY WHEN THE FOUNDER CAN DO IT INSTEAD', () =
   // and the token box on step 5 cannot both exist.
   assert.equal('ghlCheckNotBuilt' in SETUP_ERRORS, false, 'the GoHighLevel check is built, so its refusal must be gone');
 
-  assert.equal(FILE_ERRORS.sampleNotBuilt.status, 501);
-  assert.match(FILE_ERRORS.sampleNotBuilt.message, /messages instead/);
-  // It says the founder's work is safe, which is the first thing they want to know
-  // and the last thing a refusal usually says.
-  assert.match(FILE_ERRORS.sampleNotBuilt.message, /Nothing you have made is affected/);
+  // Uploads got built, so the 501 that stood in for them goes the same way, for
+  // the same reason as the line above.
+  assert.equal('sampleNotBuilt' in FILE_ERRORS, false, 'uploads are built, so its refusal must be gone');
+
+  // Every upload refusal says the founder's work is safe, which is the first
+  // thing they want to know and the last thing a refusal usually says.
+  for (const key of ['uploadTooLarge', 'uploadNoRoom', 'uploadBusy'] as const) {
+    assert.match(
+      FILE_ERRORS[key].message,
+      /Nothing else is affected|Nothing is lost|nothing else has changed/,
+      `${key} should say what is still safe`,
+    );
+  }
+
+  // The one refusal a founder is most likely to hit names the way out rather
+  // than the rule. A founder holding a .docx needs the eight seconds of work,
+  // not the words "unsupported file type".
+  assert.equal(FILE_ERRORS.uploadWrongType.status, 415);
+  assert.match(FILE_ERRORS.uploadWrongType.message, /Save As/);
+  assert.match(FILE_ERRORS.uploadWrongType.message, /HEIC/);
+
+  // Busy is a wait, not a fault, and 409 is the only status that means "try the
+  // same thing again shortly".
+  assert.equal(FILE_ERRORS.uploadBusy.status, 409);
+  assert.match(FILE_ERRORS.uploadBusy.message, /Wait for it to finish/);
 });
 
 /**

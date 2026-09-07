@@ -53,6 +53,7 @@ import {
   connections,
   founders,
   geFile,
+  geFileVersion,
   messages,
   sessions,
   setupSteps,
@@ -60,7 +61,14 @@ import {
   turnEvents,
   turns,
 } from '../db/schema.ts';
-import { getBlob, getBlobs } from '../storage/blobs.ts';
+import { getBlob, getBlobs, putBlob } from '../storage/blobs.ts';
+import {
+  LIMIT_FILE_BYTES,
+  LIMIT_FILE_COUNT,
+  LIMIT_TOTAL_BYTES,
+  UPLOADS_FOLDER,
+  uploadSlug,
+} from '../storage/paths.ts';
 import { unwrapDataKey, type DataKey } from '../storage/crypto.ts';
 import type {
   Accepted,
@@ -80,6 +88,7 @@ import type {
   TurnPriority,
   TurnRow,
   TurnStatus,
+  UploadOutcome,
 } from './ports.ts';
 
 /**
@@ -344,6 +353,113 @@ export class PgAppStore implements AppStore {
       .limit(1);
     const row = rows[0];
     return row === undefined ? null : { ...row, status: asStatus(row.status), priority: asPriority(row.priority) };
+  }
+
+  async hasLiveTurn(founderId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: turns.id })
+      .from(turns)
+      .where(and(eq(turns.founderId, founderId), inArray(turns.status, ['queued', 'running'])))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async saveUpload(
+    founderId: string,
+    file: { name: string; bytes: Buffer },
+  ): Promise<UploadOutcome> {
+    const path = `${UPLOADS_FOLDER}/${uploadSlug(file.name)}`;
+    const sizeBytes = file.bytes.byteLength;
+
+    if (sizeBytes > LIMIT_FILE_BYTES) {
+      return { ok: false, reason: 'too_large', limitBytes: LIMIT_FILE_BYTES };
+    }
+
+    return await this.db.transaction(async (tx) => {
+      await setFounderScope(tx, founderId);
+
+      /**
+       * The in flight check, inside the transaction rather than in the route.
+       *
+       * The route checks too, so this is the second of two. It is here because
+       * the route's answer is already stale by the time it acts on it, and a row
+       * that lands after a turn's materialise and before its harvest is the one
+       * case that used to cost the founder the whole run they were watching.
+       * planHarvest now treats an unmaterialised uploads row as expected, so the
+       * remaining cost of losing this race is nothing at all. Both checks stay:
+       * one gives the founder a sentence, this one keeps it rare.
+       */
+      const live = await tx
+        .select({ id: turns.id })
+        .from(turns)
+        .where(and(eq(turns.founderId, founderId), inArray(turns.status, ['queued', 'running'])))
+        .limit(1);
+      if (live.length > 0) return { ok: false, reason: 'turn_in_flight' } as const;
+
+      const founderRows = await tx
+        .select({ version: founders.version })
+        .from(founders)
+        .where(eq(founders.id, founderId))
+        .limit(1);
+      const versionBefore = founderRows[0]?.version;
+      if (versionBefore === undefined) return { ok: false, reason: 'turn_in_flight' } as const;
+
+      // The folder's limits, counted from the record rather than from disk,
+      // because the record is the thing this write is about to add to. A replaced
+      // file is not a new one, so the count only moves when the path is new.
+      const existing = await tx
+        .select({ path: geFile.path, sizeBytes: geFile.sizeBytes })
+        .from(geFile)
+        .where(eq(geFile.founderId, founderId));
+
+      const replacing = existing.find((r) => r.path === path);
+      if (replacing === undefined && existing.length >= LIMIT_FILE_COUNT) {
+        return { ok: false, reason: 'folder_full', limit: LIMIT_FILE_COUNT } as const;
+      }
+      const totalAfter =
+        existing.reduce((sum, r) => sum + r.sizeBytes, 0) - (replacing?.sizeBytes ?? 0) + sizeBytes;
+      if (totalAfter > LIMIT_TOTAL_BYTES) {
+        return { ok: false, reason: 'no_room', limitBytes: LIMIT_TOTAL_BYTES } as const;
+      }
+
+      const versionAfter = versionBefore + 1;
+      const key = await dataKeyFor(tx, founderId);
+      const put = await putBlob(tx, founderId, key, file.bytes);
+      const mtime = new Date();
+
+      await tx
+        .insert(geFile)
+        .values({ founderId, path, blobSha: put.sha, sizeBytes: put.sizeBytes, mtime, version: versionAfter })
+        .onConflictDoUpdate({
+          target: [geFile.founderId, geFile.path],
+          set: { blobSha: put.sha, sizeBytes: put.sizeBytes, mtime, version: versionAfter },
+        });
+
+      await tx
+        .insert(geFileVersion)
+        .values({
+          founderId,
+          path,
+          version: versionAfter,
+          blobSha: put.sha,
+          sizeBytes: put.sizeBytes,
+          verb: 'upload',
+          deleted: false,
+        })
+        .onConflictDoNothing();
+
+      // Word for word the check commitTurn makes, and for the same reason: no row
+      // back means somebody else moved this founder on between the read and the
+      // write, and the throw rolls everything above back.
+      const updated = await tx
+        .update(founders)
+        .set({ version: versionAfter })
+        .where(and(eq(founders.id, founderId), eq(founders.version, versionBefore)))
+        .returning({ version: founders.version });
+      if (updated.length !== 1) return { ok: false, reason: 'turn_in_flight' } as const;
+
+      return { ok: true, path, sizeBytes: put.sizeBytes } as const;
+    });
   }
 
   async lastEventIdFor(founderId: string, threadId: string, exceptTurnId: string | null): Promise<number | null> {

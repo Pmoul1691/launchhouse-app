@@ -140,14 +140,14 @@ test("the step counter is announced to a screen reader as well as drawn", () => 
 
 test("the composer says which key sends, because that is the one keyboard rule here", () => {
   const text = screenText(
-    createElement(Composer, { disabled: false, placeholder: "Type your answer", onSend: noop, onSaveAsFile: noop }),
+    createElement(Composer, { disabled: false, placeholder: "Type your answer", onSend: noop, onSaveAsFile: noop, onAttach: noop }),
   );
   assert.ok(text.includes("Enter sends. Shift and Enter starts a new line."));
 });
 
 test("the composer is shut while an answer is arriving, so nobody sends twice", () => {
   const html = markup(
-    createElement(Composer, { disabled: true, placeholder: "Waiting", onSend: noop, onSaveAsFile: noop }),
+    createElement(Composer, { disabled: true, placeholder: "Waiting", onSend: noop, onSaveAsFile: noop, onAttach: noop }),
   );
   assert.ok(html.includes("disabled"));
 });

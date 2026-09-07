@@ -43,7 +43,7 @@ import {
   fetchThread,
   interruptThread,
   openThread,
-  saveVoiceSample,
+  uploadFile,
   sendMessage,
   streamUrl,
 } from "../lib/api.ts";
@@ -146,14 +146,42 @@ export function Thread({ founder, routeId }: { readonly founder: Founder; readon
     });
   };
 
+  /**
+   * A long paste, kept as a file instead of sent as a message.
+   *
+   * It goes through the same route an uploaded file does, as a file built out of
+   * the text. One route, one set of limits, one place the refusals are written.
+   */
   const saveAsFile = (text: string): void => {
     const stamp = new Date().toISOString().slice(0, 10);
+    const file = new File([new TextEncoder().encode(text)], `sample-${stamp}.md`, {
+      type: "text/markdown",
+    });
     dispatch({ type: "notice", text: "Saving that as a file." });
-    void saveVoiceSample(`sample-${stamp}.md`, text).then((result) => {
+    void uploadFile(file).then((result) => {
       dispatch({
         type: "notice",
         text: result.ok
           ? "Saved. It is in your files, it is yours to download, and the engine can read it from there."
+          : result.problem.text,
+      });
+    });
+  };
+
+  /**
+   * A file the founder picked off their own machine.
+   *
+   * One at a time on purpose. A founder adding ten writing samples wants to see
+   * each one land, and a batch that half fails is a screen that has to explain
+   * which half, in a room where nobody has time to read it.
+   */
+  const attach = (file: File): void => {
+    dispatch({ type: "notice", text: `Adding ${file.name}.` });
+    void uploadFile(file).then((result) => {
+      dispatch({
+        type: "notice",
+        text: result.ok
+          ? `Added ${file.name}. It is in your files, and this engine can read it from there.`
           : result.problem.text,
       });
     });
@@ -331,6 +359,7 @@ export function Thread({ founder, routeId }: { readonly founder: Founder; readon
           }
           onSend={send}
           onSaveAsFile={saveAsFile}
+          onAttach={attach}
         />
       </div>
     </div>

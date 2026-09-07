@@ -39,6 +39,7 @@ import {
   seededStore,
 } from '../auth/test-fixtures.ts';
 import { OWNER_ROW_KEY } from '../auth/types.ts';
+import { LIMIT_FILE_BYTES, UPLOADS_FOLDER, uploadSlug } from '../storage/paths.ts';
 import { TurnEventBus, TurnEvents } from './events.ts';
 import { registerApiRoutes, type RegisteredRoutes } from './index.ts';
 import { QueueTurnExecutor, type RunTurn } from './turn-executor.ts';
@@ -60,6 +61,7 @@ import type {
   TurnJob,
   TurnRow,
   TurnStatus,
+  UploadOutcome,
 } from './ports.ts';
 
 export { TestLogger } from '../auth/test-fixtures.ts';
@@ -220,6 +222,44 @@ export class MemoryAppStore implements AppStore {
   findTurn(founderId: string, turnId: string): Promise<TurnRow | null> {
     const row = this.turns.get(turnId);
     return Promise.resolve(row !== undefined && row.founderId === founderId ? row : null);
+  }
+
+  /**
+   * The in memory twin. Enough to drive the route's branches and no more: the
+   * real one's value is the transaction and the version check, and neither of
+   * those can be imitated here honestly. The database test is what proves those.
+   */
+  saveUpload(founderId: string, file: { name: string; bytes: Buffer }): Promise<UploadOutcome> {
+    const path = `${UPLOADS_FOLDER}/${uploadSlug(file.name)}`;
+    const sizeBytes = file.bytes.byteLength;
+    if (sizeBytes > LIMIT_FILE_BYTES) {
+      return Promise.resolve({ ok: false, reason: 'too_large', limitBytes: LIMIT_FILE_BYTES });
+    }
+    const live = [...this.turns.values()].some(
+      (t) => t.founderId === founderId && (t.status === 'queued' || t.status === 'running'),
+    );
+    if (live) return Promise.resolve({ ok: false, reason: 'turn_in_flight' });
+
+    const forFounder = this.files.get(founderId) ?? new Map<string, { row: FileRow; bytes: Buffer }>();
+    forFounder.set(path, {
+      row: {
+        path,
+        blobSha: 'e'.repeat(64),
+        sizeBytes,
+        mtime: new Date('2026-09-25T12:00:00.000Z'),
+        version: 1,
+      },
+      bytes: file.bytes,
+    });
+    this.files.set(founderId, forFounder);
+    return Promise.resolve({ ok: true, path, sizeBytes });
+  }
+
+  hasLiveTurn(founderId: string): Promise<boolean> {
+    const live = [...this.turns.values()].some(
+      (t) => t.founderId === founderId && (t.status === 'queued' || t.status === 'running'),
+    );
+    return Promise.resolve(live);
   }
 
   findActiveTurn(founderId: string, threadId: string): Promise<TurnRow | null> {

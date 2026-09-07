@@ -237,6 +237,83 @@ export function isExcludedPath(rel: string): boolean {
 }
 
 /**
+ * The one folder a founder may put their own files into.
+ *
+ * WHY IT IS THIS NAME. It was reserved before any of this was built. The string
+ * already appears in `../rules/harvest-gate.ts` NOT_GATED_FOLDERS, in
+ * `../rules/ownership.ts` KNOWN_FOLDERS and in `../agent/labels.ts`, and the
+ * first of those is the one that matters: everything gated has its bytes read as
+ * UTF-8 text before the prose rules see it, and a PDF read as UTF-8 is mojibake
+ * being judged for its writing style. Whoever reserved it had seen that.
+ *
+ * WHY FOUNDER UPLOADS ARE NOT GATED AT ALL, stated here because it looks like a
+ * hole and is not. The rules gate polices what the MODEL writes. A founder's own
+ * writing sample is the input, not the output, and holding a founder's own words
+ * back from their own folder would be the product telling them their writing
+ * breaks its rules.
+ */
+export const UPLOADS_FOLDER = 'voice-samples';
+
+/** True for a path inside the uploads folder. Not for the folder itself. */
+export function isUploadPath(rel: string): boolean {
+  return rel.startsWith(`${UPLOADS_FOLDER}/`) && rel.length > UPLOADS_FOLDER.length + 1;
+}
+
+/**
+ * What a founder may upload, and it is a shorter list than it looks.
+ *
+ * MEASURED AGAINST THE MODEL'S OWN Read TOOL, in the CLI this app pins, rather
+ * than chosen. Read refuses `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`,
+ * `.odt`, `.bmp` and `.tiff` outright with "This tool cannot read binary files",
+ * and its image set is exactly png, jpg, jpeg, gif and webp. Accepting a `.docx`
+ * would mean storing a file, charging it against the founder's limits, showing it
+ * in their Files, and then having the model say it cannot open it. A refusal at
+ * the upload screen that names the fix is worth more than a file nobody can read.
+ *
+ * `.heic` IS DELIBERATELY ABSENT AND IS THE ONE WORTH KNOWING. It is an iPhone's
+ * default photo format, it is in neither of Read's sets, so it gets no refusal
+ * and is read as text. That is the worst of the three outcomes: not a clear no,
+ * and not a working yes, but silent nonsense. It is refused here instead.
+ */
+export const UPLOAD_EXTENSIONS: readonly string[] = [
+  '.txt', '.md', '.csv', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp',
+];
+
+/** The extension, lower case, with its dot. Empty string when there is none. */
+export function extensionOf(name: string): string {
+  const base = name.slice(name.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return '';
+  return base.slice(dot).toLowerCase();
+}
+
+/**
+ * Turn whatever a founder's file is called into a name this app will accept.
+ *
+ * IT SANITISES, AND EVERYTHING ELSE IN THIS FILE REFUSES. That is not a change of
+ * heart, it is a different input. Every other path here is one this product built,
+ * so a bad one is a bug and a refusal is how it gets fixed. This one is typed by a
+ * person on a laptop, and `Sam's post (final).pdf` is not a bug. Measured against
+ * assertSafeRelPath: apostrophes, brackets, commas, accented letters and a leading
+ * dash are all refused, and a refused name written into ge_file throws PathRefused
+ * out of every future materialise, permanently. So the name is made safe here,
+ * once, before anything touches the disk or the record.
+ *
+ * The extension is carried through separately so a dot never survives into the
+ * stem and turn into a second extension.
+ */
+export function uploadSlug(name: string): string {
+  const base = name.slice(name.lastIndexOf('/') + 1).slice(name.lastIndexOf('\\') + 1);
+  const ext = extensionOf(base);
+  const stem = ext === '' ? base : base.slice(0, base.length - ext.length);
+
+  const dashed = stem.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const trimmed = dashed.replace(/^-+/, '').replace(/-+$/, '').slice(0, 60).replace(/-+$/, '');
+  const safe = trimmed === '' ? 'sample' : trimmed;
+  return `${safe}${ext}`;
+}
+
+/**
  * The person filename derive rule, from schemas/person.md.
  *
  *   lower case, every character that is not a letter or a digit becomes a dash,
