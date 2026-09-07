@@ -58,7 +58,7 @@
 # changes what a founder gets.
 run = "npm run start"
 entrypoint = "src/server/index.ts"
-modules = ["nodejs-20", "web", "nix"]
+modules = ["web", "nix", "postgresql-16", "nodejs-22"]
 
 [nix]
 channel = "stable-25_05"
