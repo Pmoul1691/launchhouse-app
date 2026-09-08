@@ -25,7 +25,7 @@
  * WHAT IT READS. Nothing outside itself. WHAT IT WRITES. Nothing.
  */
 
-import { describe, test, beforeEach } from 'node:test';
+import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SQL } from 'drizzle-orm';
 import {
@@ -102,8 +102,33 @@ function collector(): { installed: { key: string; version: number }[]; install: 
 }
 
 let store: FakeStore;
+
+/**
+ * THE AMBIENT GE_MASTER_KEY_VERSION IS CLEARED FOR EVERY TEST IN THIS FILE.
+ *
+ * ensureMasterKey resolves its pin as `deps.versionPin ?? lateSettings().masterKeyVersionPin`.
+ * So a test that passes no versionPin does not thereby get "no pin". It gets whatever the
+ * environment happens to be holding, and lateSettings reads process.env at call time.
+ *
+ * "with no pin, the highest version held is the current one" asserted a condition it never
+ * established. It passed for as long as it did only because nobody running this suite had
+ * the variable set. The first run with a real .env attached set it to 1, which pinned
+ * version 1, and the test failed on the key it got back rather than on anything the code
+ * had done wrong. Clearing it here is what makes the test's own name true.
+ *
+ * The original value is put back afterwards, because a test file that edits the environment
+ * and leaves it edited is the next quiet failure in some other file.
+ */
+const ambientVersionPin = process.env.GE_MASTER_KEY_VERSION;
+
 beforeEach(() => {
   store = new FakeStore();
+  delete process.env.GE_MASTER_KEY_VERSION;
+});
+
+afterEach(() => {
+  if (ambientVersionPin === undefined) delete process.env.GE_MASTER_KEY_VERSION;
+  else process.env.GE_MASTER_KEY_VERSION = ambientVersionPin;
 });
 
 // =========================================================================================

@@ -21,7 +21,7 @@
     "lint": "eslint .",
     "probe": "tsx scripts/probe-deployment.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/server/db/migrate.ts",
+    "db:migrate": "tsx --env-file-if-exists=.env src/server/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "skills:gen": "tsx scripts/gen-skill-prompts.ts",
     "engine:bump": "tsx scripts/bump-engine.ts",
