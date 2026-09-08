@@ -328,6 +328,21 @@ export const REACHED_FROM_OUTSIDE_THE_BROWSER: readonly Call[] = [
     path: '/api/mcp/whoami',
     from: "scripts/prove-token.ts, and the founder's own Claude Desktop",
   },
+  {
+    method: 'POST',
+    path: '/api/mcp/rpc',
+    from: "the founder's own Claude Desktop, over src/server/routes/mcp-rpc.ts",
+  },
+  {
+    /**
+     * Registered on purpose so it can answer 405 rather than 404. A client
+     * looking for the server to client stream is told the address is real and
+     * the method is not. See the header of src/server/routes/mcp-rpc.ts.
+     */
+    method: 'GET',
+    path: '/api/mcp/rpc',
+    from: "the founder's own Claude Desktop, over src/server/routes/mcp-rpc.ts",
+  },
 ];
 
 /** Every file path named inside a `from` string, for the staleness check. */

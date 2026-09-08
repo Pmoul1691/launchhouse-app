@@ -25,6 +25,7 @@ import { registerFileRoutes } from './files.ts';
 import { registerGateRoutes } from './gates.ts';
 import { registerHomeRoute } from './home.ts';
 import { registerMcpRoutes } from './mcp.ts';
+import { registerMcpRpcRoutes } from './mcp-rpc.ts';
 import { registerSetupRoutes } from './setup.ts';
 import { registerMessageRoutes } from './messages.ts';
 import { registerStreamRoute, OpenStreams } from './stream.ts';
@@ -71,6 +72,13 @@ export async function registerApiRoutes(app: FastifyInstance, deps: RouteDeps): 
    * last thing that should be reachable without appearing here.
    */
   await registerMcpRoutes(app, deps);
+
+  /**
+   * The address that actually speaks MCP. ./mcp.ts is the token smoke test and
+   * stays, because "is my token alive" is worth asking on its own and is worth
+   * asking WITHOUT a JSON-RPC envelope around it when the answer is no.
+   */
+  await registerMcpRpcRoutes(app, deps);
   return { streams };
 }
 
