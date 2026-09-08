@@ -115,7 +115,7 @@ test('tools/list publishes every tool with a schema a client can read', async (t
   }
   assert.deepEqual(
     tools.map((t2) => t2.name).sort(),
-    ['check_progress', 'check_turn', 'list_files', 'read_file', 'start_turn'],
+    ['add_voice_sample', 'check_progress', 'check_turn', 'list_files', 'read_file', 'start_turn'],
   );
 });
 
@@ -479,4 +479,68 @@ test('check_turn refuses a turn id it does not have', async (t) => {
 
   const refused = await refuseTool(h, 'check_turn', { turnId: 'not-a-real-turn' });
   assert.match(refused, /no turn with the id not-a-real-turn/);
+});
+
+// =========================================================================================
+// The one write. saveUpload is the only write to ge_file that is not a harvest, so this is
+// the only file this connector can put there.
+// =========================================================================================
+
+test('add_voice_sample writes a file the read tools can then see', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const written = await callTool(h, 'add_voice_sample', {
+    name: 'linkedin-post-january.md',
+    text: 'We turned up on site at six and the client was already there.',
+  });
+  const path = String(written['path']);
+  assert.match(path, /linkedin-post-january/);
+  assert.ok(Number(written['sizeBytes']) > 0);
+
+  /**
+   * The round trip is the point. A write the read tools cannot see afterwards is
+   * a write into somewhere that is not the founder's app. read_file answers with
+   * the file itself rather than with JSON, so it is read here as text.
+   */
+  const listed = await callTool(h, 'list_files', {});
+  const names = (listed['files'] as { name: string }[]).map((r) => r.name);
+  assert.ok(names.includes(path), `${path} was written but not listed. Got: ${names.join(', ')}`);
+
+  const read = await handleRpcMessage(
+    contextOf(h),
+    ask('tools/call', { name: 'read_file', arguments: { path } }),
+  );
+  const body = toolText(resultOf(read));
+  assert.equal(body.isError, false);
+  assert.match(body.text, /six and the client/);
+});
+
+test('add_voice_sample refuses a type this transport cannot carry', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const refused = await refuseTool(h, 'add_voice_sample', { name: 'deck.pdf', text: 'not really a pdf' });
+  assert.match(refused, /\.md, \.txt, \.csv/);
+  assert.match(refused, /bytes cannot travel as text/);
+});
+
+test('add_voice_sample waits for a turn rather than racing the folder it rebuilds', async (t) => {
+  // A run that never settles, so the turn stays in flight for the whole test.
+  const h = await buildHarness({ track: 'b2b', run: () => new Promise<void>(() => undefined) });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  await callTool(h, 'start_turn', { routeId: 'founder-brain', message: 'hello' });
+  await new Promise((r) => setImmediate(r));
+
+  const refused = await refuseTool(h, 'add_voice_sample', { name: 'sample.md', text: 'anything' });
+  assert.match(refused, /turn is running/);
+  // Not permanent, and the sentence has to say so or a model gives up on it.
+  assert.match(refused, /again/);
 });

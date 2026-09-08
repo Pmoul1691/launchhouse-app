@@ -15,13 +15,24 @@
  * things the brief asks for: read files and Brain, check state and progress, and
  * run a full engine turn.
  *
- * WRITING FILES BACK IS STILL ABSENT, and that is step 6 rather than an
- * oversight. A write arriving here would go around the runtime rules gate, and
- * that gate is one of the six rules the app exists to enforce. An endpoint that
- * is the way a rule stops applying is worse than no endpoint. Note that a turn
- * started below CAN write files, and that is fine: it writes them through ge and
- * through the gate, exactly as a turn started from the browser does. The
- * difference is where the writing is decided, not who asked for it.
+ * THERE IS EXACTLY ONE WRITE HERE, AND IT IS NOT "WRITE FILES BACK".
+ *
+ * The brief's fourth thing is writing a founder's files from Claude. This
+ * connector does not do that, and the reason is in ports.ts rather than here:
+ * saveUpload is "THE ONLY WRITE TO ge_file THAT IS NOT A HARVEST". Every other
+ * file a founder has is written by a turn, which materialises the folder, lets
+ * ge write into it under an advisory lock, and harvests the result. A second
+ * non harvest write path is the thing that architecture exists to avoid, and an
+ * endpoint that is the way a rule stops applying is worse than no endpoint.
+ *
+ * So add_voice_sample below is the one write, it goes through saveUpload
+ * unchanged, and it inherits every refusal that has: a turn in flight, the size
+ * cap, and the folder cap.
+ *
+ * TO CHANGE ANY OTHER FILE, START A TURN AND SAY SO. That is not a workaround,
+ * it is the supported path, and it is why start_turn is here. A turn writes
+ * files through ge and through the runtime rules gate, exactly as a turn from
+ * the browser does. The difference is who asked, not what is allowed.
  *
  * A TURN IS STARTED AND POLLED, NEVER WAITED ON. A turn runs 30 to 180 seconds.
  * No tool call can sit for that long, so start_turn returns a turn id as soon as
@@ -63,6 +74,7 @@ import { z } from 'zod';
 
 import { ROUTES } from '../../../app/content/routes.ts';
 import { fileFilterFor } from '../rules/index.ts';
+import { extensionOf } from '../storage/paths.ts';
 import { kindOf, listRowsFor } from './files.ts';
 import { checkSendBody } from './messages.ts';
 import { presentFiles, trackOf } from './founder-state.ts';
@@ -412,6 +424,70 @@ export const TOOLS: readonly Tool[] = [
       );
     },
   },
+
+  {
+    name: 'add_voice_sample',
+    description:
+      'Add a piece of the founder\'s own writing to voice-samples/, which is what the engines read to ' +
+      'learn how this founder writes. This is the ONLY file this connector can write. Every other file ' +
+      'a founder has is written by an engine during a turn, so to change one of those, call start_turn ' +
+      'and say what you want changed. Refused while a turn is running, because a turn is rebuilding ' +
+      'the same folder.',
+    schema: z.object({
+      name: z
+        .string()
+        .min(1)
+        .describe('A file name ending in .md, .txt or .csv, for example linkedin-post-january.md'),
+      text: z.string().min(1).describe("The writing itself, in the founder's own words"),
+    }),
+    async run({ deps, founder }, args) {
+      const { name, text } = args as { name: string; text: string };
+
+      const extension = extensionOf(name);
+      if (!TEXT_UPLOAD_EXTENSIONS.includes(extension)) {
+        throw new ToolRefusal(
+          `${name} cannot be added. Give it a name ending in ${TEXT_UPLOAD_EXTENSIONS.join(', ')}. ` +
+            'A PDF or an image has to be added from the app, because bytes cannot travel as text.',
+        );
+      }
+
+      const bytes = Buffer.from(text, 'utf8');
+      const outcome = await deps.store.saveUpload(founder.id, { name, bytes });
+
+      if (outcome.ok) {
+        deps.log.info(
+          { founderId: founder.id, path: outcome.path, sizeBytes: outcome.sizeBytes },
+          'a file was added through the MCP connector',
+        );
+        return JSON.stringify({ path: outcome.path, sizeBytes: outcome.sizeBytes }, null, 2);
+      }
+
+      /**
+       * EVERY ONE OF THESE IS AN ORDINARY ANSWER RATHER THAN A FAULT, which is
+       * how routes/files.ts treats them too. `turn_in_flight` in particular is
+       * the interesting one for a model: it is not a failure and it is not
+       * permanent, so the sentence says to wait rather than to give up.
+       */
+      switch (outcome.reason) {
+        case 'turn_in_flight':
+          throw new ToolRefusal(
+            'A turn is running, and it is rebuilding this folder. Wait for check_turn to say done, then add it again.',
+          );
+        case 'too_large':
+          throw new ToolRefusal(
+            `That is too big. The limit is ${String(outcome.limitBytes)} bytes and this was ${String(bytes.byteLength)}.`,
+          );
+        case 'folder_full':
+          throw new ToolRefusal(
+            `voice-samples/ already holds ${String(outcome.limit)} files, which is the limit. Remove one in the app first.`,
+          );
+        case 'no_room':
+          throw new ToolRefusal(
+            `voice-samples/ has no room left. The limit is ${String(outcome.limitBytes)} bytes across the folder.`,
+          );
+      }
+    },
+  },
 ];
 
 /**
@@ -424,6 +500,17 @@ export const TOOLS: readonly Tool[] = [
  * is deliberately not a claim about which end of the thread that window is.
  */
 const MESSAGE_LOOKBACK = 50;
+
+/**
+ * The upload extensions that can arrive as a JSON string.
+ *
+ * UPLOAD_EXTENSIONS in storage/paths.ts is the measured list and it includes
+ * PDFs and images. Those cannot come through a tool call, because a tool
+ * argument is text and bytes that survived a round trip through a JSON string
+ * are not the file the founder had. So this is that list narrowed to the part
+ * this transport can actually carry, rather than a second opinion about types.
+ */
+const TEXT_UPLOAD_EXTENSIONS: readonly string[] = ['.md', '.txt', '.csv'];
 
 /** What a turn that did not finish means, in a sentence the model can act on. */
 const ENDED_BADLY: Record<string, string> = {
