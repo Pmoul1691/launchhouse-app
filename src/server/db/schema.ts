@@ -292,6 +292,59 @@ export const sessions = pgTable(
 );
 
 /**
+ * Bearer tokens, for a client that is not a browser. Section none: this table is
+ * not in the build document. It is the MCP work, and the reasoning is here.
+ *
+ * WHY IT EXISTS. Claude's custom connector UI on the web accepts an OAuth client
+ * id and secret and nothing else, so a token authed MCP endpoint cannot be added
+ * as a connector on claude.ai. It can be added to Claude Desktop's local config,
+ * where headers are supported. This is the credential that config presents.
+ *
+ * IT DOES NOT OPEN ANYTHING. `PUBLIC_API_PATHS` in src/server/auth/plugin.ts is
+ * empty and stays empty. This is a second way to prove the request is the
+ * founder, landing on the same founder row a cookie would, and every route stays
+ * shut to a request that proves nothing.
+ *
+ * `id` IS THE HASH, NOT THE TOKEN, and there is no column here that could be
+ * presented to this app. See `tokenIdFor` in src/server/auth/api-token.ts, which
+ * also carries the reason a passphrase change invalidates every row in this
+ * table on purpose.
+ *
+ * IT CARRIES NO ROW LEVEL SECURITY POLICY, AND THAT IS NOT AN OVERSIGHT. Every
+ * policy in rls.sql filters on `current_setting('app.founder_id')`. This is the
+ * table that DECIDES which founder a request is, so at the moment it is read
+ * nothing has been set, the filter would be null, and every lookup would match
+ * zero rows. No token would ever work. `sessions` is absent from rls.sql for
+ * exactly the same reason. Adding either one looks like tightening a screw and
+ * is how the MCP endpoint stops answering.
+ *
+ * NO EXPIRY COLUMN IS NULLABLE. `expires_at` is NOT NULL so that "this token
+ * never expires" cannot be written by accident. It does not slide.
+ */
+export const apiTokens = pgTable(
+  'api_tokens',
+  {
+    id: text('id').primaryKey(),
+    founderId: text('founder_id')
+      .notNull()
+      .references(() => founders.id, { onDelete: 'cascade' }),
+    /**
+     * What the founder typed at mint time, so a list can say which token is
+     * which. Never any part of the token: `connections` stores a token prefix
+     * for a vendor question, and storing one here would put characters of a live
+     * secret in every backup to make a list read better.
+     */
+    label: text('label').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /** Null until first use. Written at most once an hour, never on every call. */
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [index('api_tokens_founder_idx').on(t.founderId)],
+);
+
+/**
  * Magic link tokens. The token itself is never stored, only its sha256, so a
  * database dump does not hand somebody 130 live sign in links.
  *
@@ -793,6 +846,7 @@ export const allTables = {
   geBlob,
   geEvent,
   sessions,
+  apiTokens,
   signinTokens,
   mentorRequests,
   threads,

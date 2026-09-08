@@ -26,7 +26,15 @@
  * WHAT IT READS AND WRITES. Its own Maps. Nothing on disk, nothing over a socket.
  */
 
-import { OWNER_ROW_KEY, type AuthStore, type Clock, type FounderRow, type Logger, type SessionRow } from './types.ts';
+import {
+  OWNER_ROW_KEY,
+  type ApiTokenRow,
+  type AuthStore,
+  type Clock,
+  type FounderRow,
+  type Logger,
+  type SessionRow,
+} from './types.ts';
 
 export class TestClock implements Clock {
   constructor(private at: Date = new Date('2026-09-25T13:00:00.000Z')) {}
@@ -83,6 +91,7 @@ export interface AuthEvent {
 export class MemoryAuthStore implements AuthStore {
   readonly founders = new Map<string, FounderRow>();
   readonly sessions = new Map<string, SessionRow>();
+  readonly apiTokens = new Map<string, ApiTokenRow>();
   readonly events: AuthEvent[] = [];
 
   addFounder(row: Partial<FounderRow> & { id: string; email: string }): FounderRow {
@@ -133,6 +142,39 @@ export class MemoryAuthStore implements AuthStore {
   revokeSession(id: string, at: Date): Promise<void> {
     const row = this.sessions.get(id);
     if (row !== undefined) this.sessions.set(id, { ...row, revokedAt: at });
+    return Promise.resolve();
+  }
+
+  /**
+   * The bearer token, in four methods shaped like the four sessions has.
+   *
+   * `insertApiToken` REFUSES A SECOND ROW UNDER THE SAME ID, which is a small
+   * departure from the session methods above and it copies the database rather
+   * than the sibling. `api_tokens.id` is a primary key, so Postgres would refuse
+   * this, and a fixture that quietly overwrote instead would prove the opposite
+   * of what a test claiming "a token cannot be replaced" says.
+   */
+  insertApiToken(row: ApiTokenRow): Promise<void> {
+    if (this.apiTokens.has(row.id)) {
+      return Promise.reject(new Error(`api_tokens already has a row with id ${row.id}`));
+    }
+    this.apiTokens.set(row.id, row);
+    return Promise.resolve();
+  }
+
+  findApiToken(id: string): Promise<ApiTokenRow | null> {
+    return Promise.resolve(this.apiTokens.get(id) ?? null);
+  }
+
+  touchApiToken(id: string, lastUsedAt: Date): Promise<void> {
+    const row = this.apiTokens.get(id);
+    if (row !== undefined) this.apiTokens.set(id, { ...row, lastUsedAt });
+    return Promise.resolve();
+  }
+
+  revokeApiToken(id: string, at: Date): Promise<void> {
+    const row = this.apiTokens.get(id);
+    if (row !== undefined) this.apiTokens.set(id, { ...row, revokedAt: at });
     return Promise.resolve();
   }
 

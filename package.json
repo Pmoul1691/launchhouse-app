@@ -27,6 +27,7 @@
     "engine:bump": "tsx scripts/bump-engine.ts",
     "seed": "tsx scripts/seed.ts",
     "purge:tokens": "tsx scripts/purge-tokens.ts",
+    "token:mint": "TZ=UTC tsx scripts/mint-token.ts",
     "prove:turn": "tsx scripts/prove-turn.ts",
     "prove:init": "tsx scripts/prove-init.ts",
     "prebuild": "tsx scripts/check-replit-config.ts"

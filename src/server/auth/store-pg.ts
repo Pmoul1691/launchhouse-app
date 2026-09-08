@@ -38,9 +38,9 @@
  * WHAT CALLS IT. src/server/index.ts, which builds one and hands it to the auth
  * plugin.
  *
- * WHAT IT READS. founder, sessions, ge_event.
+ * WHAT IT READS. founder, sessions, api_tokens, ge_event.
  * WHAT IT WRITES. founder (once, on the first claim, including that founder's
- * wrapped data key), sessions, ge_event.
+ * wrapped data key), sessions, api_tokens, ge_event.
  *
  * NOT YET EXECUTED AGAINST A REAL DATABASE. Every statement is typechecked
  * against the real schema, which catches a wrong column and a missing filter.
@@ -54,9 +54,16 @@
 import { and, eq, gte, sql } from 'drizzle-orm';
 
 import { getDb, type Db } from '../db/client.ts';
-import { founders, geEvent, sessions } from '../db/schema.ts';
+import { apiTokens, founders, geEvent, sessions } from '../db/schema.ts';
 import { createFounderKey } from '../storage/crypto.ts';
-import { OWNER_ROW_KEY, type AuthStore, type FounderRow, type Logger, type SessionRow } from './types.ts';
+import {
+  OWNER_ROW_KEY,
+  type ApiTokenRow,
+  type AuthStore,
+  type FounderRow,
+  type Logger,
+  type SessionRow,
+} from './types.ts';
 
 const FOUNDER_COLUMNS = {
   id: founders.id,
@@ -75,6 +82,16 @@ const SESSION_COLUMNS = {
   expiresAt: sessions.expiresAt,
   lastSeenAt: sessions.lastSeenAt,
   revokedAt: sessions.revokedAt,
+} as const;
+
+const API_TOKEN_COLUMNS = {
+  id: apiTokens.id,
+  founderId: apiTokens.founderId,
+  label: apiTokens.label,
+  createdAt: apiTokens.createdAt,
+  expiresAt: apiTokens.expiresAt,
+  lastUsedAt: apiTokens.lastUsedAt,
+  revokedAt: apiTokens.revokedAt,
 } as const;
 
 export class OwnerRowMissing extends Error {
@@ -197,6 +214,46 @@ export class PgAuthStore implements AuthStore {
 
   async revokeSession(id: string, at: Date): Promise<void> {
     await this.db.update(sessions).set({ revokedAt: at }).where(eq(sessions.id, id));
+  }
+
+  /**
+   * The bearer token, in four statements shaped exactly like the four above it.
+   *
+   * NO SECRET IS STORED HERE EITHER, and it is the same argument the header
+   * makes about sessions. `api_tokens.id` is a hash of the token and the
+   * passphrase, so these four statements cannot be made to yield a credential,
+   * and a `select *` over this table by somebody with a database URL gives them
+   * a list of labels and dates.
+   *
+   * `insertApiToken` is a plain insert with no conflict clause. The id is
+   * derived from 32 random bytes, so a collision is not a race two callers can
+   * lose: it is an event that does not happen. A duplicate key here would mean
+   * the random source has failed, and an error is the right answer to that.
+   */
+  async insertApiToken(row: ApiTokenRow): Promise<void> {
+    await this.db.insert(apiTokens).values({
+      id: row.id,
+      founderId: row.founderId,
+      label: row.label,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      lastUsedAt: row.lastUsedAt,
+      revokedAt: row.revokedAt,
+    });
+  }
+
+  async findApiToken(id: string): Promise<ApiTokenRow | null> {
+    const rows = await this.db.select(API_TOKEN_COLUMNS).from(apiTokens).where(eq(apiTokens.id, id)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  /** Moves `last_used_at` and nothing else. A token does not slide. */
+  async touchApiToken(id: string, lastUsedAt: Date): Promise<void> {
+    await this.db.update(apiTokens).set({ lastUsedAt }).where(eq(apiTokens.id, id));
+  }
+
+  async revokeApiToken(id: string, at: Date): Promise<void> {
+    await this.db.update(apiTokens).set({ revokedAt: at }).where(eq(apiTokens.id, id));
   }
 
   /**

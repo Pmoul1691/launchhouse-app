@@ -95,12 +95,41 @@ export interface SessionRow {
 }
 
 /**
+ * One bearer token, for a client that is not a browser and has no cookie jar.
+ *
+ * THE SECOND CREDENTIAL, AND IT LANDS ON THE SAME FOUNDER ROW. Claude Desktop
+ * sends a header because its local config supports one, and there is no way for
+ * it to hold a cookie. Everything about what a request may then do is unchanged:
+ * ./plugin.ts still refuses every path under `/api/` that resolves to nobody.
+ *
+ * `id` IS NOT THE TOKEN, and there is no column that is. See `tokenIdFor` in
+ * ./api-token.ts: the id is a hash of the token and the passphrase, so a dump of
+ * this database contains nothing anybody can present, and changing the
+ * passphrase makes every row here unreachable on purpose.
+ *
+ * `label` is what the founder typed at mint time, so a list can say which token
+ * is which without storing any part of one. `connections` stores a token prefix
+ * for a related question, and this deliberately does not: a prefix of a real
+ * secret in a backup buys a nicer list and costs actual entropy.
+ */
+export interface ApiTokenRow {
+  readonly id: string;
+  readonly founderId: string;
+  readonly label: string;
+  readonly createdAt: Date;
+  readonly expiresAt: Date;
+  /** Null until the token is first presented. Written at most once an hour. */
+  readonly lastUsedAt: Date | null;
+  readonly revokedAt: Date | null;
+}
+
+/**
  * Everything sign in does to the database.
  *
  * Small on purpose. The old interface had eleven methods because a roster, a
  * token pair, a rate limit counted in Postgres and a mentor queue all lived
- * behind it. What is left is the owner row, sessions, and the audit line, and
- * every one of those has a caller in this folder.
+ * behind it. What is left is the owner row, sessions, api tokens, and the audit
+ * line, and every one of those has a caller in this folder.
  */
 export interface AuthStore {
   /**
@@ -136,6 +165,25 @@ export interface AuthStore {
   findSession(id: string): Promise<SessionRow | null>;
   touchSession(id: string, lastSeenAt: Date, expiresAt: Date): Promise<void>;
   revokeSession(id: string, at: Date): Promise<void>;
+
+  /**
+   * The same four operations for the bearer token, and no more than four.
+   *
+   * THERE IS NO `findApiTokensFor(founderId)` YET, on purpose. Nothing lists
+   * tokens today: they are minted by scripts/mint-token.ts and read by
+   * ./plugin.ts. A method with no caller reads in a review exactly like one that
+   * works, which is the mistake ./types.ts already had to be cleared of once.
+   * The founder_id index is in the schema so the listing costs one method when
+   * something needs it.
+   *
+   * `touchApiToken` moves `last_used_at` and NOTHING ELSE. It is not the token's
+   * version of `touchSession`, which also slides an expiry. A token does not
+   * slide: see API_TOKEN_TTL_DAYS in ./api-token.ts.
+   */
+  insertApiToken(row: ApiTokenRow): Promise<void>;
+  findApiToken(id: string): Promise<ApiTokenRow | null>;
+  touchApiToken(id: string, lastUsedAt: Date): Promise<void>;
+  revokeApiToken(id: string, at: Date): Promise<void>;
 
   /**
    * How many audit lines with this verb the owner has since `since`.
