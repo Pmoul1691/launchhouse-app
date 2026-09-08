@@ -11,13 +11,23 @@
  * `tools/list`. So adding a tool later touches TOOLS below and nothing else, and
  * in particular does not touch the door, the route list or the contract test.
  *
- * READ ONLY, AND THAT IS THE WHOLE OF STEP 4. Three tools, all of them reads.
- * They cover the first two of the four things the brief asks for: read files and
- * Brain, and check state and progress. Running a turn and writing files back are
- * steps 5 and 6 and are deliberately absent, because a write that came in here
- * would bypass the runtime rules gate, and that gate is one of the six rules the
- * app exists to enforce. A read cannot break a rule, which is why reads are the
- * ones that go first.
+ * FIVE TOOLS. Three reads, and two that run a turn. They cover three of the four
+ * things the brief asks for: read files and Brain, check state and progress, and
+ * run a full engine turn.
+ *
+ * WRITING FILES BACK IS STILL ABSENT, and that is step 6 rather than an
+ * oversight. A write arriving here would go around the runtime rules gate, and
+ * that gate is one of the six rules the app exists to enforce. An endpoint that
+ * is the way a rule stops applying is worse than no endpoint. Note that a turn
+ * started below CAN write files, and that is fine: it writes them through ge and
+ * through the gate, exactly as a turn started from the browser does. The
+ * difference is where the writing is decided, not who asked for it.
+ *
+ * A TURN IS STARTED AND POLLED, NEVER WAITED ON. A turn runs 30 to 180 seconds.
+ * No tool call can sit for that long, so start_turn returns a turn id as soon as
+ * the message is durable and check_turn reports on it. That is the same split
+ * the browser makes, where a POST returns 202 and an SSE stream carries the
+ * answer. There is no stream here, so the second half is a poll.
  *
  * IT REUSES THE SCREENS' OWN LOGIC RATHER THAN RE IMPLEMENTING IT. `listRowsFor`
  * is what the files screen renders. `progressOf` and `nextRouteId` are what the
@@ -54,6 +64,7 @@ import { z } from 'zod';
 import { ROUTES } from '../../../app/content/routes.ts';
 import { fileFilterFor } from '../rules/index.ts';
 import { kindOf, listRowsFor } from './files.ts';
+import { checkSendBody } from './messages.ts';
 import { presentFiles, trackOf } from './founder-state.ts';
 import { nextRouteId, progressOf } from './home.ts';
 import { mayStart } from './threads.ts';
@@ -226,7 +237,200 @@ export const TOOLS: readonly Tool[] = [
       );
     },
   },
+  {
+    name: 'start_turn',
+    description:
+      'Send a message to one of the engines and start a turn. Returns a turn id straight away and ' +
+      'does not wait, because a turn takes 30 to 180 seconds. Poll check_turn with that id until it ' +
+      'says done. This carries on the founder\'s open conversation for that engine, or opens one if ' +
+      'there is none. Use check_progress to see which engines there are and which one comes next.',
+    schema: z.object({
+      routeId: z
+        .string()
+        .min(1)
+        .describe('Which engine to run, as check_progress names it, for example founder-brain'),
+      message: z.string().min(1).describe('What to say to the engine'),
+      idempotencyKey: z
+        .string()
+        .optional()
+        .describe(
+          'Optional. Send the same key to retry safely: a repeat is recognised and does not start a ' +
+            'second turn. Without one, calling this twice runs the engine twice and is charged twice.',
+        ),
+    }),
+    async run({ deps, founder }, args) {
+      const { routeId, message, idempotencyKey } = args as {
+        routeId: string;
+        message: string;
+        idempotencyKey?: string;
+      };
+
+      switch (mayStart(routeId, founder.track)) {
+        case 'unknown':
+          throw new ToolRefusal(
+            `There is no engine called ${routeId}. Call check_progress to see the ones this founder has.`,
+          );
+        case 'wrong_track':
+          throw new ToolRefusal(`${routeId} belongs to the other track, so it cannot be started here.`);
+        case 'ok':
+          break;
+      }
+
+      /**
+       * THE SAME CHECK THE COMPOSER USES, not a second one written here. It owns
+       * the length cap and the shape of an idempotency key, and the sentence it
+       * returns is already written for a founder to read.
+       */
+      const checked = checkSendBody(
+        { text: message, clientMsgId: idempotencyKey ?? null },
+        deps.maxMessageBytes,
+      );
+      if (!checked.ok) throw new ToolRefusal(checked.error.message);
+
+      /**
+       * The founder's open conversation for this engine, or a new one. This is
+       * what POST /api/threads does, and it is the same judgement: somebody
+       * coming back to the Brain is carrying on rather than starting again, and
+       * a second thread would split their history in two.
+       */
+      const open = (await deps.store.listThreads(founder.id))
+        .filter((t) => t.routeId === routeId && t.closedAt === null)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+      const thread =
+        open ??
+        (await deps.store.createThread({
+          id: deps.ids.thread(),
+          founderId: founder.id,
+          routeId,
+          title: null,
+          at: deps.clock.now(),
+        }));
+
+      const accepted = await deps.store.acceptMessage({
+        founderId: founder.id,
+        threadId: thread.id,
+        text: checked.body.text,
+        clientMsgId: checked.body.clientMsgId,
+        messageId: deps.ids.message(),
+        turnId: deps.ids.turn(),
+        at: deps.clock.now(),
+      });
+
+      /**
+       * SUBMITTED AFTER THE MESSAGE IS DURABLE, NEVER BEFORE, and on the next
+       * tick, exactly as routes/messages.ts does it. Admission can wait on the
+       * database and the queue can be full, and neither may hold up an accept
+       * that is already written down. A duplicate is not submitted again: that
+       * is what the unique index is for and what idempotencyKey buys.
+       */
+      if (!accepted.duplicate) {
+        setImmediate(() => {
+          deps.executor.submit({
+            turnId: accepted.turnId,
+            threadId: thread.id,
+            founderId: founder.id,
+            routeId,
+            priority: accepted.priority,
+            text: checked.body.text,
+          });
+        });
+      }
+
+      return JSON.stringify(
+        {
+          turnId: accepted.turnId,
+          threadId: thread.id,
+          alreadyRunning: accepted.duplicate,
+          next: 'Call check_turn with this turnId. A turn takes 30 to 180 seconds.',
+        },
+        null,
+        2,
+      );
+    },
+  },
+  {
+    name: 'check_turn',
+    description:
+      'Check a turn that start_turn began. Returns its status, and the engine\'s reply once it is ' +
+      'done. While the status is queued or running there is no reply yet and the right thing to do ' +
+      'is call this again in a few seconds.',
+    schema: z.object({
+      turnId: z.string().min(1).describe('The turnId that start_turn returned'),
+    }),
+    async run({ deps, founder }, args) {
+      const { turnId } = args as { turnId: string };
+
+      // Scoped to this founder by the store, so a turn id belonging to somebody
+      // else is not found rather than refused, which is the same answer.
+      const turn = await deps.store.findTurn(founder.id, turnId);
+      if (turn === null) throw new ToolRefusal(`There is no turn with the id ${turnId}.`);
+
+      if (turn.status === 'queued' || turn.status === 'running') {
+        return JSON.stringify(
+          {
+            turnId,
+            status: turn.status,
+            reply: null,
+            note: 'Not finished yet. Call check_turn again in a few seconds.',
+          },
+          null,
+          2,
+        );
+      }
+
+      if (turn.status !== 'done') {
+        return JSON.stringify(
+          { turnId, status: turn.status, reply: null, note: ENDED_BADLY[turn.status] ?? '' },
+          null,
+          2,
+        );
+      }
+
+      /**
+       * The engine's answer is the assistant message written after this turn
+       * started. Matched on time rather than on an id, because a message row
+       * carries no turn id: the turn knows which founder message began it and
+       * nothing links the answer back the other way.
+       */
+      const messages = await deps.store.listMessages(founder.id, turn.threadId, MESSAGE_LOOKBACK);
+      const reply = messages
+        .filter((m) => m.role === 'assistant' && m.createdAt.getTime() >= turn.createdAt.getTime())
+        .at(-1);
+
+      return JSON.stringify(
+        {
+          turnId,
+          status: turn.status,
+          reply: reply?.text ?? null,
+          note:
+            reply === undefined
+              ? 'The turn finished but wrote no reply. Read the thread in the app.'
+              : '',
+        },
+        null,
+        2,
+      );
+    },
+  },
 ];
+
+/**
+ * How many messages check_turn reads while looking for the engine's answer.
+ *
+ * A turn produces one assistant message, so one would nearly always do. Fifty is
+ * for the case that matters: a founder who sent three messages from the browser
+ * while a turn started here was still running. What actually picks the answer out
+ * is the time filter below. This is only the size of the window it reads, and it
+ * is deliberately not a claim about which end of the thread that window is.
+ */
+const MESSAGE_LOOKBACK = 50;
+
+/** What a turn that did not finish means, in a sentence the model can act on. */
+const ENDED_BADLY: Record<string, string> = {
+  failed: 'That turn failed. Nothing was written. Start it again, and tell a mentor if it fails twice.',
+  refused: 'That turn was refused by the runtime rules. The engine will say why in the app.',
+  interrupted: 'That turn was stopped before it finished. Whatever it had written is kept.',
+};
 
 const BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 

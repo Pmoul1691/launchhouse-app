@@ -22,9 +22,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { FOUNDER_A } from '../auth/test-fixtures.ts';
+import { ROUTES } from '../../../app/content/routes.ts';
 import { gatesSource } from '../rules/gates-source.ts';
 import { fileFilterFor } from '../rules/index.ts';
 import { handleRpcMessage, PROTOCOL_VERSION, RPC, TOOLS, type ToolContext } from './mcp-rpc.ts';
+import { mayStart } from './threads.ts';
 import { buildHarness, type Harness } from './test-fixtures.ts';
 
 /** The founder every test here is, matching the row buildHarness seeds. */
@@ -113,7 +115,7 @@ test('tools/list publishes every tool with a schema a client can read', async (t
   }
   assert.deepEqual(
     tools.map((t2) => t2.name).sort(),
-    ['check_progress', 'list_files', 'read_file'],
+    ['check_progress', 'check_turn', 'list_files', 'read_file', 'start_turn'],
   );
 });
 
@@ -291,4 +293,190 @@ test('the route is wired at the path a Claude Desktop config will name', async (
   const got = await h.app.inject({ method: 'GET', url: '/api/mcp/rpc', headers: { cookie } });
   assert.equal(got.statusCode, 405);
   assert.equal(got.headers['allow'], 'POST');
+});
+
+// =========================================================================================
+// The two that run a turn. A turn takes 30 to 180 seconds, so the whole design is that
+// neither of these waits for one.
+// =========================================================================================
+
+/** Call one tool and hand back the parsed JSON its text carries. */
+async function callTool(h: Harness, name: string, args: unknown): Promise<Record<string, unknown>> {
+  const out = await handleRpcMessage(contextOf(h), ask('tools/call', { name, arguments: args }));
+  const answered = toolText(resultOf(out));
+  assert.equal(answered.isError, false, `${name} refused: ${answered.text}`);
+  return JSON.parse(answered.text) as Record<string, unknown>;
+}
+
+/** Call one tool expecting it to refuse, and hand back the sentence. */
+async function refuseTool(h: Harness, name: string, args: unknown): Promise<string> {
+  const out = await handleRpcMessage(contextOf(h), ask('tools/call', { name, arguments: args }));
+  const answered = toolText(resultOf(out));
+  assert.equal(answered.isError, true, `${name} was expected to refuse and did not`);
+  return answered.text;
+}
+
+test('start_turn opens a conversation, stores the message once, and returns without waiting', async (t) => {
+  let runs = 0;
+  const h = await buildHarness({
+    track: 'b2b',
+    run: () => {
+      runs += 1;
+      return Promise.resolve();
+    },
+  });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const started = await callTool(h, 'start_turn', {
+    routeId: 'founder-brain',
+    message: 'we sell to construction firms',
+  });
+
+  assert.equal(typeof started['turnId'], 'string');
+  assert.equal(typeof started['threadId'], 'string');
+  assert.equal(started['alreadyRunning'], false);
+  assert.match(String(started['next']), /check_turn/, 'the answer does not say what to do next');
+
+  assert.equal(h.store.messages.length, 1, 'one message row');
+  assert.equal(h.store.turns.size, 1, 'one turn row');
+
+  // The submit is on the next tick, exactly as routes/messages.ts does it, so
+  // the tool returns before the engine is asked for anything.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(runs, 1);
+});
+
+test('start_turn carries on the open conversation rather than opening a second one', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const first = await callTool(h, 'start_turn', { routeId: 'founder-brain', message: 'one' });
+  await new Promise((r) => setImmediate(r));
+  const second = await callTool(h, 'start_turn', { routeId: 'founder-brain', message: 'two' });
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(second['threadId'], first['threadId'], 'a second thread would split the history in two');
+  assert.notEqual(second['turnId'], first['turnId'], 'but they are separate turns');
+});
+
+test('an idempotencyKey makes a retry safe, so a blip does not run the engine twice', async (t) => {
+  let runs = 0;
+  const h = await buildHarness({
+    track: 'b2b',
+    run: () => {
+      runs += 1;
+      return Promise.resolve();
+    },
+  });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const args = { routeId: 'founder-brain', message: 'we sell to construction firms', idempotencyKey: 'retry-me' };
+  const first = await callTool(h, 'start_turn', args);
+  const second = await callTool(h, 'start_turn', args);
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(second['turnId'], first['turnId'], 'the retry was handed the turn it already has');
+  assert.equal(first['alreadyRunning'], false);
+  assert.equal(second['alreadyRunning'], true);
+  assert.equal(h.store.messages.length, 1, 'one message row');
+  assert.equal(runs, 1, 'and the engine ran once, so the founder is not charged twice');
+});
+
+test('start_turn refuses a route that is not theirs to start', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const unknown = await refuseTool(h, 'start_turn', { routeId: 'no-such-engine', message: 'hello' });
+  assert.match(unknown, /no engine called no-such-engine/);
+  assert.match(unknown, /check_progress/, 'the refusal does not say how to find the real ones');
+
+  // Derived rather than written down, so it does not go stale when a route moves.
+  const otherTrack = ROUTES.find((r) => mayStart(r.id, 'b2b') === 'wrong_track');
+  if (otherTrack !== undefined) {
+    const refused = await refuseTool(h, 'start_turn', { routeId: otherTrack.id, message: 'hello' });
+    assert.match(refused, /other track/);
+  }
+
+  assert.equal(h.store.turns.size, 0, 'a refused start wrote nothing');
+});
+
+test('start_turn refuses an empty message with the composer\'s own sentence', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const refused = await refuseTool(h, 'start_turn', { routeId: 'founder-brain', message: '   ' });
+  assert.match(refused, /nothing in that message/i);
+  assert.equal(h.store.turns.size, 0);
+});
+
+test('check_turn reports a turn in flight, then hands back the reply once it is done', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const started = await callTool(h, 'start_turn', {
+    routeId: 'founder-brain',
+    message: 'we sell to construction firms',
+  });
+  const turnId = String(started['turnId']);
+  const threadId = String(started['threadId']);
+
+  const running = await callTool(h, 'check_turn', { turnId });
+  assert.equal(running['reply'], null, 'a turn in flight has no reply');
+  assert.match(String(running['note']), /again/, 'it does not say to call back');
+
+  // The engine finishing, as the executor would leave it.
+  await h.store.setTurnStatus(turnId, 'done', h.clock.now());
+  h.store.messages.push({
+    id: 'msg-assistant-1',
+    threadId,
+    founderId: FOUNDER_A,
+    role: 'assistant',
+    text: 'Here is the Brain.',
+    clientMsgId: null,
+    createdAt: new Date(h.clock.now().getTime() + 1000),
+  });
+
+  const done = await callTool(h, 'check_turn', { turnId });
+  assert.equal(done['status'], 'done');
+  assert.equal(done['reply'], 'Here is the Brain.');
+});
+
+test('a turn that ended badly says so rather than reporting an empty reply', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const started = await callTool(h, 'start_turn', { routeId: 'founder-brain', message: 'hello' });
+  const turnId = String(started['turnId']);
+
+  for (const status of ['failed', 'refused', 'interrupted'] as const) {
+    await h.store.setTurnStatus(turnId, status, h.clock.now());
+    const answered = await callTool(h, 'check_turn', { turnId });
+    assert.equal(answered['status'], status);
+    assert.equal(answered['reply'], null, status);
+    assert.ok(String(answered['note']).length > 0, `${status} came back with no sentence in it`);
+  }
+});
+
+test('check_turn refuses a turn id it does not have', async (t) => {
+  const h = await buildHarness({ track: 'b2b', run: () => Promise.resolve() });
+  t.after(async () => {
+    await h.app.close();
+  });
+
+  const refused = await refuseTool(h, 'check_turn', { turnId: 'not-a-real-turn' });
+  assert.match(refused, /no turn with the id not-a-real-turn/);
 });
