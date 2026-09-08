@@ -58,29 +58,9 @@
 # changes what a founder gets.
 run = "npm run start"
 entrypoint = "src/server/index.ts"
-# Node 22. Not a preference, and this comment was deleted once and is back because the thing
-# it warns about then happened. The imported workspace briefly came up as nodejs-20, which
-# contradicts the engines range in package.json, and it had to be corrected by hand.
-#
-# The Agent SDK ships the Linux CLI binary the agent loop spawns as a PER PLATFORM OPTIONAL
-# dependency. An install that skips optional dependencies fails at the founder's first
-# message, not at install time. src/server/boot/platform-cli.ts resolves that binary at boot,
-# reads its ELF interpreter to check the libc matches the host, RUNS it, and refuses to
-# report ready when it cannot.
-#
-# CONFIRMED ON THE REAL MACHINE, 31 August 2026, by the probe: Node v22.22.0, Linux x64, and
-# @anthropic-ai/claude-agent-sdk-linux-x64/claude executes and reports 2.1.251. The musl
-# build is also present in the tree and is correctly never selected on this glibc host.
-#
-# "web" and "nix" were added by Replit when the workspace was imported. They are the
-# workspace's own modules and are left as Replit set them.
-modules = ["web", "nix", "nodejs-22"]
+modules = ["nodejs-20", "web", "nix"]
 
 [nix]
-# Moved from stable-24_05 by Replit on import. replit.nix pins the tools ge shells out to,
-# and a channel move changes their versions, which is the whole reason that pin exists. The
-# probe ran on 25_05 and answered the shell utilities question successfully, so ge has what
-# it needs on this channel. Re-check if this line moves again.
 channel = "stable-25_05"
 
 [env]
