@@ -24,6 +24,7 @@ import type { FastifyInstance } from 'fastify';
 import { registerFileRoutes } from './files.ts';
 import { registerGateRoutes } from './gates.ts';
 import { registerHomeRoute } from './home.ts';
+import { registerMcpRoutes } from './mcp.ts';
 import { registerSetupRoutes } from './setup.ts';
 import { registerMessageRoutes } from './messages.ts';
 import { registerStreamRoute, OpenStreams } from './stream.ts';
@@ -58,6 +59,18 @@ export async function registerApiRoutes(app: FastifyInstance, deps: RouteDeps): 
   await registerMessageRoutes(app, deps);
   await registerStreamRoute(app, deps, streams);
   await registerFileRoutes(app, deps);
+
+  /**
+   * Last, and the only entry here nothing in the browser calls.
+   *
+   * Everything above is asked for by src/web/lib/api.ts. This one is asked for
+   * by the founder's own Claude Desktop, over a token, under the one prefix
+   * src/server/auth/plugin.ts accepts a token on. It is in this list rather than
+   * registered somewhere else precisely because the list is the answer to "what
+   * does this app expose", and a surface reachable by a second credential is the
+   * last thing that should be reachable without appearing here.
+   */
+  await registerMcpRoutes(app, deps);
   return { streams };
 }
 

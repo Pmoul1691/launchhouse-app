@@ -51,21 +51,31 @@
  * injected at the real app, with no cookie, and must come back refused rather
  * than not found.
  *
+ * THERE ARE TWO CALLER LISTS NOW, AND STILL ONE COMPARISON. api.ts is the
+ * browser's. REACHED_FROM_OUTSIDE_THE_BROWSER below is everything else, which
+ * today is the MCP prefix, reached by the founder's own Claude Desktop over a
+ * bearer token. It is deliberately written as callers rather than as exceptions,
+ * so both directions above still apply to every address in it.
+ *
  * WHAT IT CALLS. The real Fastify instance from ./test-fixtures.ts, and the
  * text of src/web/lib/api.ts.
- * WHAT IT READS. One source file. WHAT IT WRITES. Nothing.
+ * WHAT IT READS. One source file, and the existence of any file a caller names.
+ * WHAT IT WRITES. Nothing.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { MCP_API_PREFIX } from '../auth/plugin.ts';
 import { buildHarness } from './test-fixtures.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const API_TS = join(HERE, '../../web/lib/api.ts');
+/** The repository root, for checking that a named caller is still on disk. */
+const ROOT = join(HERE, '../../..');
 
 /** One address, and how it is reached. HEAD and OPTIONS are the router's, not ours. */
 export interface Call {
@@ -277,6 +287,54 @@ export function compare(
   return { unrouted, uncalled: routes.filter((r) => !used.has(r)) };
 }
 
+/**
+ * Addresses called by something that is not the browser bundle.
+ *
+ * THIS IS NOT AN EXEMPTION, AND IF IT EVER BECOMES ONE IT IS WRONG. The scan in
+ * this file compares what the server registers against what anything calls.
+ * src/web/lib/api.ts has been the only caller list because the browser has been
+ * the only caller. It is not any more: an address under the MCP prefix is called
+ * by the founder's own Claude Desktop over a bearer token, and by
+ * scripts/prove-token.ts.
+ *
+ * SO THESE ARE CALLERS, NOT SKIPS, and every entry is checked in BOTH directions
+ * exactly like a path read out of api.ts. Naming an address here that nobody
+ * registered fails the build the same way a browser call with no route does, and
+ * deleting the route without deleting the line goes red.
+ *
+ * That is the whole reason it is a list of CALLS rather than a set of routes to
+ * ignore, which was the first design. A skip list turns off both directions for
+ * the addresses in it, so the day somebody deletes the route the endpoint is
+ * silently gone and this file, which exists to catch exactly that, says nothing.
+ *
+ * THREE THINGS ARE ASSERTED ABOUT THIS LIST BELOW, because a list that only has
+ * to be non empty is a list that rots.
+ *
+ *   Every entry is under MCP_API_PREFIX. That is what stops this becoming the
+ *   place an orphaned browser route goes to be forgiven. It can only ever cover
+ *   addresses where a bearer token actually works. A non browser caller for some
+ *   other address, a webhook say, has to widen that rule on purpose, here.
+ *
+ *   Every entry names its caller.
+ *
+ *   Every file path named in `from` still exists. `from` is prose, so it can go
+ *   stale: delete scripts/prove-token.ts next year and the string still claims
+ *   it. app/tests/skill-diff.test.ts has the same problem and the same fix, and
+ *   calls it "a stale allowlist row fails rather than quietly widening the gate".
+ */
+export const REACHED_FROM_OUTSIDE_THE_BROWSER: readonly Call[] = [
+  {
+    method: 'GET',
+    path: '/api/mcp/whoami',
+    from: "scripts/prove-token.ts, and the founder's own Claude Desktop",
+  },
+];
+
+/** Every file path named inside a `from` string, for the staleness check. */
+export function pathsNamedIn(from: string): readonly string[] {
+  return [...from.matchAll(/[\w./-]+\.(?:ts|tsx|md|json|sh)/g)].map((m) => m[0]);
+}
+
 /** Only the app's own API. `/auth/` is server rendered pages a browser navigates to. */
 function apiOnly(list: readonly Call[]): readonly Call[] {
   return list.filter((c) => c.path.startsWith('/api/'));
@@ -288,7 +346,10 @@ async function bothSides(): Promise<{
   close: () => Promise<void>;
 }> {
   const h = await buildHarness();
-  const calls = apiOnly(callsIn(readFileSync(API_TS, 'utf8')));
+  // Two caller lists, one comparison. See REACHED_FROM_OUTSIDE_THE_BROWSER: the
+  // second is callers rather than exceptions, so both directions still apply to
+  // everything in it.
+  const calls = [...apiOnly(callsIn(readFileSync(API_TS, 'utf8'))), ...REACHED_FROM_OUTSIDE_THE_BROWSER];
   const routes = apiOnly(routesInPrintout(h.app.printRoutes({ commonPrefix: false })));
   return {
     calls,
@@ -349,7 +410,10 @@ test('EVERY ADDRESS THE BROWSER CALLS HAS A ROUTE BEHIND IT', async () => {
  */
 test('AND THE ROUTER ACTUALLY ANSWERS THEM, WHICH IS A DIFFERENT QUESTION', async () => {
   const h = await buildHarness();
-  const calls = apiOnly(callsIn(readFileSync(API_TS, 'utf8')));
+  // The MCP addresses are injected here too, with no credential. A route behind a
+  // bearer token must refuse exactly like every other route rather than answering
+  // 404, and nothing else in this file asks the router that question.
+  const calls = [...apiOnly(callsIn(readFileSync(API_TS, 'utf8'))), ...REACHED_FROM_OUTSIDE_THE_BROWSER];
 
   for (const call of calls) {
     // A concrete value for every hole. The value never resolves to anything,
@@ -429,6 +493,61 @@ test('A CATCH ALL DOES NOT HIDE AN ORPHAN UNDERNEATH IT', () => {
   ];
   const { uncalled } = compare(calls, routes);
   assert.deepEqual(uncalled.map((r) => `${r.method} ${r.path}`), ['GET /api/files/:p/download']);
+});
+
+// ---------------------------------------------------------------------------
+// The second caller list has to stay honest
+// ---------------------------------------------------------------------------
+
+test('EVERY OUTSIDE CALLER IS UNDER THE MCP PREFIX, so this list cannot forgive a browser route', () => {
+  // The guard that stops this becoming the place an orphan goes to be excused.
+  // It can only ever cover addresses where a bearer token actually works, and
+  // widening that is a decision somebody makes in this file rather than a line
+  // added in a hurry.
+  for (const call of REACHED_FROM_OUTSIDE_THE_BROWSER) {
+    assert.ok(
+      call.path.startsWith(MCP_API_PREFIX),
+      `${call.path} is not under ${MCP_API_PREFIX}, and no token would be accepted there anyway`,
+    );
+  }
+});
+
+test('EVERY OUTSIDE CALLER NAMES SOMETHING, AND WHAT IT NAMES STILL EXISTS', () => {
+  // `from` is prose, so it rots. Delete scripts/prove-token.ts next year and the
+  // string still claims it. app/tests/skill-diff.test.ts calls this "a stale
+  // allowlist row fails rather than quietly widening the gate" and fixes it the
+  // same way, by checking the named thing is still on disk.
+  for (const call of REACHED_FROM_OUTSIDE_THE_BROWSER) {
+    assert.notEqual(call.from.trim(), '', `${call.method} ${call.path} does not say who calls it`);
+    const named = pathsNamedIn(call.from);
+    for (const file of named) {
+      assert.ok(
+        existsSync(join(ROOT, file)),
+        `${call.method} ${call.path} says it is called by ${file}, and that file is gone. Either it moved, or this address has no caller left and the route should go.`,
+      );
+    }
+  }
+});
+
+test('the caller scan finds a file path in prose and is not fooled by ordinary words', () => {
+  // A guard whose extractor silently matched nothing would make the check above
+  // vacuous, which is the failure mode of every scan in this file.
+  assert.deepEqual(pathsNamedIn("scripts/prove-token.ts, and the founder's own Claude Desktop"), [
+    'scripts/prove-token.ts',
+  ]);
+  assert.deepEqual(pathsNamedIn('nothing here names a file'), []);
+  assert.deepEqual(pathsNamedIn('two of them: src/a.ts and app/b.md'), ['src/a.ts', 'app/b.md']);
+});
+
+test('AN ENTRY IN THE OUTSIDE LIST WITH NO ROUTE BEHIND IT IS STILL REPORTED', () => {
+  // The property that makes this a caller list rather than an exemption. If it
+  // were a skip list, deleting the route would go unnoticed. Made up on both
+  // sides, like the two proofs above, so it does not depend on the app being
+  // correct today.
+  const calls: Call[] = [{ method: 'GET', path: '/api/mcp/not-registered', from: 'made up' }];
+  const routes: Call[] = [{ method: 'GET', path: '/api/mcp/whoami', from: 'made up' }];
+  const { unrouted } = compare(calls, routes);
+  assert.deepEqual(unrouted.map((c) => `${c.method} ${c.path}`), ['GET /api/mcp/not-registered']);
 });
 
 test('IT GOES RED WHEN THE ADDRESS MATCHES AND THE METHOD DOES NOT', () => {

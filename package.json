@@ -30,6 +30,8 @@
     "token:mint": "TZ=UTC tsx scripts/mint-token.ts",
     "prove:turn": "tsx scripts/prove-turn.ts",
     "prove:init": "tsx scripts/prove-init.ts",
+    "prove:token": "TZ=UTC tsx --env-file-if-exists=.env scripts/prove-token.ts",
+    "scratch:clear-key": "TZ=UTC tsx --env-file-if-exists=.env scripts/clear-scratch-master-key.ts",
     "prebuild": "tsx scripts/check-replit-config.ts"
   },
   "dependencies": {
