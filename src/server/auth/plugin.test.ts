@@ -26,9 +26,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 
-import { createAuth, crossSiteWrite, type AuthContext } from './plugin.ts';
+import { API_TOKEN_PREFIX, API_TOKEN_TTL_DAYS, mintApiToken } from './api-token.ts';
+import { bearerFrom, createAuth, crossSiteWrite, MCP_API_PREFIX, type AuthContext } from './plugin.ts';
 import { DEFAULT_ATTEMPT_LIMIT } from './rate-limit.ts';
 import {
   MemoryAuthStore,
@@ -96,6 +98,16 @@ async function harness(
    */
   app.get('/api/files/notes.md', async (_request, reply) => reply.send({ body: PRIVATE_BODY }));
 
+  /**
+   * A route under the prefix where a bearer token is accepted, and it forgot to
+   * call requireFounder too.
+   *
+   * The same trick as the route above, on the other credential. Nothing may
+   * reach it without a founder, and the hook is what makes that true rather than
+   * the route being careful.
+   */
+  app.get('/api/mcp/notes.md', async (_request, reply) => reply.send({ body: PRIVATE_BODY }));
+
   // The health check, which has to answer even on a deployment nobody can sign
   // in to, or the container is never promoted far enough to show the screen
   // saying what to set.
@@ -117,6 +129,24 @@ async function signIn(h: Harness, passphrase = TEST_PASSPHRASE): Promise<string>
   assert.ok(cookie !== undefined, 'no session cookie was set');
   return cookie.value;
 }
+
+/**
+ * A live token for the owner of this harness, and the value that presents it.
+ *
+ * It signs in first, because a token hangs off a founder row and a harness that
+ * has never been claimed has none. That is the same order the real thing runs
+ * in: scripts/mint-token.ts refuses on a deployment nobody has signed in to.
+ */
+async function mint(h: Harness, label = 'claude desktop, mac'): Promise<string> {
+  await signIn(h);
+  const owner = await h.store.findOwner();
+  assert.ok(owner !== null, 'signing in should have claimed the deployment');
+  const minted = mintApiToken(owner.id, label, { ttlDays: API_TOKEN_TTL_DAYS, bindingSecret: TEST_PASSPHRASE }, h.clock);
+  await h.store.insertApiToken(minted.row);
+  return minted.value;
+}
+
+const bearer = (token: string): Record<string, string> => ({ authorization: `Bearer ${token}` });
 
 // ------------------------------------------------------------- the screen
 
@@ -554,4 +584,286 @@ test('ON EVERY OTHER DEPLOYMENT THE GUARD IS INERT, BECAUSE LAX ALREADY REFUSED'
   // Not 403. The browser never sent the cookie in the first place, and adding a
   // second refusal here would change behaviour nobody asked to change.
   assert.equal(res.statusCode, 303);
+});
+
+// --------------------------------------------------------- the second credential
+
+/**
+ * The mirror of "A ROUTE THAT FORGOT TO ASK WHO WAS CALLING IS STILL SHUT", on
+ * the other credential. If this goes green because the bearer path was removed,
+ * the MCP endpoint is unreachable. If the one below it goes green because the
+ * prefix test was removed, a leaked token reaches the whole API.
+ */
+test('A LIVE TOKEN IS THE FOUNDER UNDER THE MCP PREFIX, AND NOTHING ELSE IS', async () => {
+  const h = await harness();
+  const token = await mint(h);
+
+  const allowed = await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  assert.equal(allowed.statusCode, 200);
+  assert.match(allowed.body, new RegExp(PRIVATE_BODY));
+
+  // Nothing at all, at the same address.
+  const bare = await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md' });
+  assert.equal(bare.statusCode, 401);
+  assert.doesNotMatch(bare.body, new RegExp(PRIVATE_BODY));
+  await h.app.close();
+});
+
+test('THE SAME LIVE TOKEN IS REFUSED OUTSIDE THE PREFIX, WHICH IS THE WHOLE POINT OF HAVING ONE', async () => {
+  const h = await harness();
+  const token = await mint(h);
+
+  const outside = await h.app.inject({ method: 'GET', url: '/api/files/notes.md', headers: bearer(token) });
+  assert.equal(outside.statusCode, 401);
+  assert.doesNotMatch(outside.body, new RegExp(PRIVATE_BODY));
+  assert.equal(JSON.parse(outside.body).error, 'token_wrong_address');
+
+  // And it is refused for being at the wrong address rather than for being a bad
+  // token, so a founder is not sent to mint another one that fails the same way.
+  assert.doesNotMatch(outside.body, /token:mint/);
+  await h.app.close();
+});
+
+test('A TOKEN AT THE WRONG ADDRESS READS THE SAME WHETHER IT IS REAL OR INVENTED', async () => {
+  const h = await harness();
+  const real = await mint(h);
+  const invented = `${API_TOKEN_PREFIX}${'z'.repeat(43)}`;
+
+  const a = await h.app.inject({ method: 'GET', url: '/api/files/notes.md', headers: bearer(real) });
+  const b = await h.app.inject({ method: 'GET', url: '/api/files/notes.md', headers: bearer(invented) });
+  assert.equal(a.statusCode, b.statusCode);
+  assert.equal(a.body, b.body);
+  await h.app.close();
+});
+
+test('EVERY WAY A TOKEN FAILS READS IDENTICALLY, so nobody learns they guessed a real one', async () => {
+  const h = await harness();
+
+  // Three tokens, each broken a different way, all minted for the real owner so
+  // the only difference between them is the reason they fail.
+  const revoked = await mint(h, 'revoked');
+  const expired = await mint(h, 'expired');
+  const live = await mint(h, 'live');
+
+  for (const [id, row] of h.store.apiTokens) {
+    if (row.label === 'revoked') await h.store.revokeApiToken(id, h.clock.now());
+  }
+
+  // The live one works, so the refusals below are refusals rather than the whole
+  // bearer path being broken.
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(live) })).statusCode, 200);
+
+  const ask = async (token: string) =>
+    h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+
+  // The shape every one of them must take, from a value that is certainly unknown.
+  const reference = await ask(`${API_TOKEN_PREFIX}${'y'.repeat(43)}`);
+  assert.equal(reference.statusCode, 401);
+  assert.equal(JSON.parse(reference.body).error, 'token_not_accepted');
+
+  // `malformed` is a value with no space in it, so the header parse hands it on
+  // and the SHAPE test is what refuses it. A value containing a space never gets
+  // this far: bearerFrom reads the header as malformed and the request reads as
+  // carrying no credential at all, which is a different sentence and is right.
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['not-a-token', 'malformed'],
+    [`${API_TOKEN_PREFIX}${'z'.repeat(43)}`, 'unknown'],
+    [revoked, 'revoked'],
+  ];
+
+  // A for loop rather than a table runner, because node:test has no it.each and
+  // a failure still has to name which case it was.
+  for (const [value, why] of cases) {
+    const res = await ask(value);
+    assert.equal(res.statusCode, 401, why);
+    assert.equal(res.body, reference.body, `${why} does not read like every other refusal`);
+  }
+
+  // Expiry, which needs the clock moved rather than a different value.
+  h.clock.advance(API_TOKEN_TTL_DAYS * 86_400_000 + 1);
+  const stale = await ask(expired);
+  assert.equal(stale.statusCode, 401);
+  assert.equal(stale.body, reference.body, 'an expired token does not read like an unknown one');
+  await h.app.close();
+});
+
+test('THE REFUSAL NAMES THE FIX, because both ways a token dies are silent', async () => {
+  const h = await harness();
+  const res = await h.app.inject({
+    method: 'GET',
+    url: '/api/mcp/notes.md',
+    headers: bearer(`${API_TOKEN_PREFIX}${'z'.repeat(43)}`),
+  });
+  const body = JSON.parse(res.body) as { message: string };
+  assert.match(body.message, /expired or unknown/);
+  assert.match(body.message, /token:mint/, 'a founder should not have to read code to know what to do');
+  assert.match(body.message, /OWNER_PASSPHRASE/, 'the other silent death is not mentioned');
+});
+
+test('A REQUEST WITH NO CREDENTIAL AT ALL STILL GETS THE SENTENCE THE BUNDLE PAINTS', async () => {
+  const h = await harness();
+  for (const url of ['/api/files/notes.md', '/api/mcp/notes.md']) {
+    const res = await h.app.inject({ method: 'GET', url });
+    assert.equal(res.statusCode, 401);
+    assert.equal(JSON.parse(res.body).error, 'not_signed_in', url);
+  }
+  await h.app.close();
+});
+
+test('A CHANGED PASSPHRASE REFUSES THE TOKEN, THE WAY IT SIGNS EVERY DEVICE OUT', async () => {
+  const h = await harness();
+  const token = await mint(h);
+  assert.equal((await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) })).statusCode, 200);
+
+  // The Replit Secret is edited and the app redeployed. Same store, same rows.
+  const after = await harness({ passphrase: 'a different passphrase entirely' });
+  after.store.apiTokens.set([...h.store.apiTokens.keys()][0] ?? '', [...h.store.apiTokens.values()][0]!);
+  for (const [id, row] of h.store.founders) after.store.founders.set(id, row);
+
+  const res = await after.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  assert.equal(res.statusCode, 401);
+  assert.equal(JSON.parse(res.body).error, 'token_not_accepted');
+  await h.app.close();
+  await after.app.close();
+});
+
+// --------------------------------------------------- the header, and precedence
+
+test('THE AUTHORIZATION HEADER IS READ STRICTLY, AND EVERY REFUSAL IS FREE', () => {
+  const good = `${API_TOKEN_PREFIX}${'z'.repeat(43)}`;
+  const cases: ReadonlyArray<readonly [string | undefined, string | undefined, string]> = [
+    [`Bearer ${good}`, good, 'the ordinary shape'],
+    [`bearer ${good}`, good, 'the scheme is case insensitive per RFC 7235'],
+    [`BEARER ${good}`, good, 'upper case scheme'],
+    [undefined, undefined, 'no header at all'],
+    ['', undefined, 'an empty header'],
+    [`Basic ${good}`, undefined, 'the wrong scheme'],
+    [`Token ${good}`, undefined, 'a scheme this app does not use'],
+    ['Bearer', undefined, 'the scheme with no value'],
+    [`Bearer  ${good}`, undefined, 'two spaces'],
+    [`Bearer ${good} `, undefined, 'a trailing space from a copy and paste'],
+    [`Bearer ${good} extra`, undefined, 'a second word'],
+    [good, undefined, 'the bare token with no scheme'],
+  ];
+  for (const [header, expected, why] of cases) {
+    assert.equal(bearerFrom(header), expected, `${JSON.stringify(header)} is ${why}`);
+  }
+});
+
+test('A LIVE COOKIE WINS OVER A RUBBISH HEADER, so a stale config cannot sign the founder out', async () => {
+  const h = await harness();
+  const cookie = await signIn(h);
+  const res = await h.app.inject({
+    method: 'GET',
+    url: '/api/files/notes.md',
+    cookies: { lh_session: cookie },
+    headers: bearer('not-a-token-at-all'),
+  });
+  assert.equal(res.statusCode, 200);
+  await h.app.close();
+});
+
+test('A LIVE TOKEN STILL WORKS ALONGSIDE A DEAD COOKIE', async () => {
+  const h = await harness();
+  const token = await mint(h);
+  const res = await h.app.inject({
+    method: 'GET',
+    url: '/api/mcp/notes.md',
+    cookies: { lh_session: 'a'.repeat(43) },
+    headers: bearer(token),
+  });
+  assert.equal(res.statusCode, 200);
+  await h.app.close();
+});
+
+test('A TOKEN REQUEST CARRIES NO SESSION ROW, AND NOTHING ASKS IT TO', async () => {
+  const h = await harness();
+  const token = await mint(h);
+  const before = h.store.sessions.size;
+  await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  assert.equal(h.store.sessions.size, before, 'a bearer request minted a session, which nothing should do');
+  await h.app.close();
+});
+
+test('THE FIRST USE OF A TOKEN IS RECORDED, AND THE SECOND WITHIN THE HOUR IS NOT', async () => {
+  const h = await harness();
+  const token = await mint(h);
+  const id = [...h.store.apiTokens.keys()][0];
+  assert.ok(id !== undefined);
+  assert.equal(h.store.apiTokens.get(id)?.lastUsedAt, null);
+
+  await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  const first = h.store.apiTokens.get(id)?.lastUsedAt;
+  assert.ok(first instanceof Date, 'the first use was not recorded');
+
+  h.clock.advance(60_000);
+  await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  assert.equal(h.store.apiTokens.get(id)?.lastUsedAt?.getTime(), first.getTime(), 'a use inside the hour was written');
+
+  h.clock.advance(3_600_000);
+  await h.app.inject({ method: 'GET', url: '/api/mcp/notes.md', headers: bearer(token) });
+  assert.notEqual(h.store.apiTokens.get(id)?.lastUsedAt?.getTime(), first.getTime(), 'a use after the hour was not written');
+  await h.app.close();
+});
+
+test('A TOKEN OPENS NOTHING ON A DEPLOYMENT WITH NO PASSPHRASE SET', async () => {
+  // The readiness refusal is above everything, so a token cannot get in front of
+  // the screen saying which Replit Secret to set.
+  const h = await harness({ passphrase: '' });
+  const res = await h.app.inject({
+    method: 'GET',
+    url: '/api/mcp/notes.md',
+    headers: bearer(`${API_TOKEN_PREFIX}${'z'.repeat(43)}`),
+  });
+  assert.equal(res.statusCode, 503);
+  await h.app.close();
+});
+
+// ------------------------------------------------------------- the door itself
+
+test('PUBLIC_API_PATHS IS STILL EMPTY, and this test is what makes that a decision', async () => {
+  // The constant is protected by a comment saying a line added there opens that
+  // address to whoever finds the URL. A comment is advice. This is the thing that
+  // turns adding one into a failing build, so the decision has to be made twice.
+  const h = await harness();
+  const source = readFileSync(new URL('./plugin.ts', import.meta.url), 'utf8');
+  const declared = /const PUBLIC_API_PATHS: readonly string\[\] = \[\];/.test(source);
+  assert.ok(declared, 'PUBLIC_API_PATHS is no longer an empty literal. Was that on purpose?');
+  await h.app.close();
+});
+
+test('THE MCP PREFIX ENDS IN A SLASH, so a route named next to it is not swept in', () => {
+  assert.ok(MCP_API_PREFIX.endsWith('/'));
+  assert.ok('/api/mcp-admin/anything'.startsWith(MCP_API_PREFIX) === false);
+});
+
+/**
+ * The seam between the two refusals, which is easy to get wrong in either
+ * direction and was got wrong once while writing these tests.
+ *
+ * A header whose value contains a space is a MALFORMED HEADER, not a bad token.
+ * bearerFrom refuses it before any token is read, so the request carries no
+ * credential at all and gets the sentence the browser bundle paints. That is
+ * right: we cannot tell a mangled Authorization header from a client that never
+ * meant to send one, and "sign in" is the safer of the two things to say.
+ */
+test('A HEADER VALUE WITH A SPACE IN IT IS NO CREDENTIAL, NOT A BAD TOKEN', async () => {
+  const h = await harness();
+  const res = await h.app.inject({
+    method: 'GET',
+    url: '/api/mcp/notes.md',
+    headers: { authorization: 'Bearer not a token at all' },
+  });
+  assert.equal(res.statusCode, 401);
+  assert.equal(JSON.parse(res.body).error, 'not_signed_in');
+
+  // And the same value with the spaces taken out reaches the token path, so the
+  // line above is about the header rather than about the value being rubbish.
+  const joined = await h.app.inject({
+    method: 'GET',
+    url: '/api/mcp/notes.md',
+    headers: { authorization: 'Bearer notatokenatall' },
+  });
+  assert.equal(JSON.parse(joined.body).error, 'token_not_accepted');
+  await h.app.close();
 });

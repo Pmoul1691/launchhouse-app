@@ -39,15 +39,23 @@
  *   is no way for src/server/index.ts to wire a value that is merely plausible
  *   and quietly lose the property.
  *
+ * THERE ARE TWO CREDENTIALS NOW, AND ONLY ONE DOOR. A session cookie, and a
+ * bearer token for a client that has no cookie jar. Both are read in `resolve`
+ * below and both end at the same founder row, so a route cannot tell them apart
+ * and does not have to. The token is accepted under ONE prefix rather than
+ * everywhere: see MCP_API_PREFIX.
+ *
  * WHAT CALLS IT. src/server/index.ts registers it once, before the API routes.
- * WHAT IT READS. The cookie on the request, and the AuthStore.
- * WHAT IT WRITES. The owner row on first claim, `sessions` and `ge_event`
- * through the store, and one Set-Cookie header.
+ * WHAT IT READS. The cookie on the request, the Authorization header, and the
+ * AuthStore.
+ * WHAT IT WRITES. The owner row on first claim, `sessions`, `api_tokens.last_used_at`
+ * and `ge_event` through the store, and one Set-Cookie header.
  */
 
 import cookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import { API_TOKEN_TTL_DAYS, readApiToken, touchApiToken, type ApiTokenConfig } from './api-token.ts';
 import { MIN_PASSPHRASE_LENGTH, OwnerAuth, type OwnerAuthConfig } from './owner.ts';
 import { asSignInNotice, notSetUpPage, signInPage, tooManyTriesPage } from './pages.ts';
 import { DEFAULT_ATTEMPT_LIMIT, SigninAttempts, type AttemptLimitConfig } from './rate-limit.ts';
@@ -157,6 +165,61 @@ const NOT_SIGNED_IN = {
 } as const;
 
 /**
+ * The answer to a bearer token that did not resolve, at an address that accepts
+ * bearer tokens.
+ *
+ * ONE SENTENCE FOR ALL FIVE REASONS. `readApiToken` can tell malformed from
+ * unknown from expired from revoked from a founder who is disabled, and every
+ * one of them arrives here as the same bytes. Saying "expired" rather than
+ * "unknown" tells whoever sent it that they guessed a real token, which is the
+ * difference between a wrong value and a value worth attacking. The reasons go
+ * to the log, where the founder can read them and a stranger cannot.
+ *
+ * IT NAMES THE FIX, because both ways this credential dies are silent. A token
+ * expires on a date nothing reminds you of, and changing OWNER_PASSPHRASE ends
+ * every token on purpose. The founder reading this is at a terminal with the
+ * repository in front of them, so the command is the most useful thing to say.
+ */
+const TOKEN_NOT_ACCEPTED = {
+  error: 'token_not_accepted',
+  message:
+    'That token is expired or unknown. Mint another with npm run token:mint and paste it into your Claude Desktop config. Changing OWNER_PASSPHRASE also ends every token.',
+} as const;
+
+/**
+ * The answer to a bearer token at an address that does not take one.
+ *
+ * WHY THIS IS NOT THE SAME SENTENCE AS THE ONE ABOVE, which was the first
+ * version. "Expired or unknown, mint another" sends the founder to re mint a
+ * token that was never the problem, and the new one fails in exactly the same
+ * way. A refusal that prescribes a fix that cannot work is worse than one that
+ * says nothing.
+ *
+ * IT LEAKS THE PREFIX, AND THE PREFIX IS NOT A SECRET. It is written in the
+ * config file this token was pasted into. What must not leak is whether a token
+ * VALUE was ever real, and this sentence is returned for a live token and a
+ * made up one alike, so it cannot answer that question.
+ *
+ * THIS IS A DELIBERATE DEPARTURE FROM THE RULE THE REST OF THIS FILE FOLLOWS, and
+ * it is named here so the next reader sees a tension that was weighed rather than
+ * an inconsistency that was missed. The guard hook below refuses `/api/files` and
+ * a route that does not exist with the same 401 on purpose, so that a probe
+ * "tells them nothing about what this app has". This sentence tells them one
+ * thing: that addresses under `/api/mcp/` take a token. That was traded, on
+ * purpose, for a founder at a terminal being able to tell "wrong address" from
+ * "dead token" without reading this file. The disclosure is one path prefix
+ * already sitting in a config file on their laptop. The thing bought is that the
+ * refusal never prescribes a fix that cannot work. If the two ever have to be
+ * reconciled, reconcile them by making the prefix less guessable, not by making
+ * this sentence vaguer, because a vaguer sentence costs the debuggability and
+ * saves nothing a probe could not learn in two requests anyway.
+ */
+const TOKEN_WRONG_ADDRESS = {
+  error: 'token_wrong_address',
+  message: 'Tokens are not accepted at that address. They work under /api/mcp/ only. A browser signs in with the passphrase instead.',
+} as const;
+
+/**
  * Is this a browser looking at a page, or code reading JSON.
  *
  * ../routes/errors.ts has the same rule and this is four lines rather than an
@@ -244,6 +307,84 @@ export function crossSiteWrite(
 const PUBLIC_API_PATHS: readonly string[] = [];
 
 /**
+ * The one prefix under `/api/` where a bearer token is accepted.
+ *
+ * THIS IS THE OPPOSITE OF THE LIST ABOVE, AND THE TWO ARE EASY TO CONFUSE.
+ * PUBLIC_API_PATHS opens an address to everybody who finds the URL. This opens
+ * nothing. Every address under here still requires a founder, and all this
+ * decides is WHICH credentials count as proving you are one. Outside it, the
+ * session cookie is the only answer.
+ *
+ * WHY THE TOKEN IS NOT SIMPLY ACCEPTED EVERYWHERE, which is one line shorter and
+ * was the first design. Two reasons, and the second is the one that settled it.
+ *
+ *   ../routes/index.ts says what is reachable is the first question in any
+ *   conversation about a closed cohort's data, and the comment above warns
+ *   against a door somebody walks through later by naming a route well. A
+ *   credential that reaches routes nobody has written yet is that same problem
+ *   wearing different clothes. A route added in a hurry in nine months is
+ *   reachable by this token, and nobody decided that.
+ *
+ *   THE STORAGE IS WEAKER THAN THE COOKIE'S, SO THE SCOPE IS NARROWER. The
+ *   session cookie is HttpOnly, scoped to this origin by the browser, and no
+ *   script on the page can read it. This token sits in a plaintext JSON config
+ *   file on a laptop, readable by anything running as that user. Weaker storage
+ *   gets less reach. That is the whole trade, and it is why a leaked token costs
+ *   the MCP tools rather than the founder's entire API.
+ *
+ * TRAILING SLASH ON PURPOSE. `/api/mcp/` and not `/api/mcp`, so a future
+ * `/api/mcp-admin` cannot be swept in by a prefix test that was written for
+ * something else.
+ *
+ * NOTHING IS REGISTERED UNDER IT YET. Step 4 of the MCP work adds the first
+ * route, and the first thing it adds is a trivial authenticated one, so there is
+ * something to curl before any real tool exists. Until then this prefix is a
+ * rule with nothing behind it, which is the correct order: the door learns the
+ * credential before the room exists.
+ */
+export const MCP_API_PREFIX = '/api/mcp/';
+
+/**
+ * The token out of an `Authorization` header, or undefined when there is not one.
+ *
+ * STRICT ON PURPOSE, AND EVERY REFUSAL HERE IS FREE. This runs before any
+ * database call, on a header anybody can send. `Bearer` is compared without
+ * regard to case because RFC 7235 says the scheme is case insensitive and real
+ * clients vary. Everything else has to be exact: one space, then a value with no
+ * space in it. That refuses `Bearer` alone, two spaces, a trailing space from a
+ * copy and paste, and a second word, all of which are a malformed header rather
+ * than a credential.
+ */
+export function bearerFrom(header: string | undefined): string | undefined {
+  if (typeof header !== 'string') return undefined;
+  const space = header.indexOf(' ');
+  if (space === -1) return undefined;
+  if (header.slice(0, space).toLowerCase() !== 'bearer') return undefined;
+  const value = header.slice(space + 1);
+  if (value === '' || value.includes(' ')) return undefined;
+  return value;
+}
+
+/**
+ * Which of the three refusals this request has earned.
+ *
+ * PURE, AND RE READS THE HEADER RATHER THAN BEING TOLD. It is a string parse on
+ * a value already in memory, and the alternative is a fourth piece of state
+ * hung on the request that `resolve` has to remember to set on every path out of
+ * itself. One of those can be got wrong.
+ *
+ * The order matters. A request with no bearer at all is a browser and gets the
+ * sentence the bundle knows how to paint. A bearer at the wrong address is told
+ * so, because telling it to re mint would prescribe a fix that cannot work.
+ * Everything else is the one sentence that covers all five ways a token fails.
+ */
+export function refusalFor(request: FastifyRequest): { readonly error: string; readonly message: string } {
+  if (bearerFrom(request.headers.authorization) === undefined) return NOT_SIGNED_IN;
+  if (!pathOf(request.url).startsWith(MCP_API_PREFIX)) return TOKEN_WRONG_ADDRESS;
+  return TOKEN_NOT_ACCEPTED;
+}
+
+/**
  * Build the sign in surface and the door that goes with it.
  *
  * `register` takes the root Fastify instance and adds to it directly, rather
@@ -276,6 +417,24 @@ export function createAuth(opts: AuthPluginOptions): {
     bindingSecret: opts.passphrase,
   };
 
+  /**
+   * The token config, built here for the reason the session config is.
+   *
+   * `bindingSecret` is the passphrase, so a token dies when the passphrase
+   * changes, exactly as every cookie does. Built from `opts.passphrase` rather
+   * than accepted from the caller, so src/server/index.ts cannot wire a value
+   * that is merely plausible and quietly lose the property. See `tokenIdFor` in
+   * ./api-token.ts for why that property is worth protecting this hard.
+   *
+   * `ttlDays` is only read at mint, which happens in scripts/mint-token.ts and
+   * never in this file. It is here because one config type serves both halves,
+   * and a second type differing by one field is a thing to keep in step.
+   */
+  const apiToken: ApiTokenConfig = {
+    ttlDays: API_TOKEN_TTL_DAYS,
+    bindingSecret: opts.passphrase,
+  };
+
   const attempts = new SigninAttempts(opts.limits ?? DEFAULT_ATTEMPT_LIMIT, opts.clock);
   const ownerCfg: OwnerAuthConfig = { passphrase: opts.passphrase, session };
   const owner = new OwnerAuth(ownerCfg, opts.store, attempts, opts.clock, opts.sleep ?? realSleep, opts.log);
@@ -292,27 +451,86 @@ export function createAuth(opts: AuthPluginOptions): {
 
     const raw = request.cookies[session.cookieName];
     const lookup = await readSession(opts.store, raw, session, opts.clock);
-    if (!lookup.ok) return false;
+    if (lookup.ok) {
+      request.founder = lookup.founder;
+      request.lhSession = lookup.session;
+
+      const moved = await slideSession(opts.store, lookup.session, session, opts.clock);
+      if (moved !== null) {
+        // The row and the cookie have to move together. A row saying 90 days
+        // behind a cookie the browser dropped after 30 is a founder who is signed
+        // in according to us and signed out according to their laptop.
+        reply.setCookie(session.cookieName, raw ?? '', cookieOptionsFor(session));
+      }
+      return true;
+    }
+
+    return await resolveBearer(request);
+  }
+
+  /**
+   * The second credential, tried only when the cookie did not answer.
+   *
+   * THE COOKIE IS TRIED FIRST AND THAT ORDER IS A DECISION. A request carrying
+   * both is a browser, because the client this token exists for has no cookie
+   * jar and sends none. Reading the cookie first means a stale Authorization
+   * header left in a config file can never shadow a live session, and it keeps
+   * the common path, which is every request the founder's own browser makes,
+   * one lookup long.
+   *
+   * IT SETS NO `lhSession`, AND NOTHING NEEDS ONE. There is no session row
+   * behind a token, so the field stays undefined. Checked rather than assumed:
+   * nothing in src/ reads `request.lhSession`, and every route reaches the
+   * founder through `founderOf`, which a bearer request satisfies identically.
+   * `endSessionOn` reads the cookie, so signing out a token request is a no
+   * operation, which is correct. A token is ended by revoking its row.
+   *
+   * THE PREFIX IS CHECKED BEFORE THE DATABASE IS, so an address that can never
+   * accept a token never costs a lookup, and a live token gets the same answer
+   * there as a made up one.
+   *
+   * THERE IS NO RATE LIMIT HERE, AND THAT IS DELIBERATE. ./rate-limit.ts slows
+   * the passphrase down because a passphrase is chosen by a person and can be
+   * guessed. A token is 32 random bytes, so guessing is not the threat model.
+   * Worse, a per client limit on this path would hand a stranger a way to switch
+   * the founder's Claude Desktop off: send rubbish until the limit trips, and
+   * the real token starts being refused. The refusal is logged and nothing else.
+   */
+  async function resolveBearer(request: FastifyRequest): Promise<boolean> {
+    const presented = bearerFrom(request.headers.authorization);
+    if (presented === undefined) return false;
+
+    const path = pathOf(request.url);
+    if (!path.startsWith(MCP_API_PREFIX)) {
+      opts.log.warn({ path }, 'refused a bearer token at an address that does not take one');
+      return false;
+    }
+
+    const lookup = await readApiToken(opts.store, presented, apiToken, opts.clock);
+    if (!lookup.ok) {
+      // The reason is for whoever reads the log, never for whoever sent the
+      // token. Every one of them answers with the same bytes: see
+      // TOKEN_NOT_ACCEPTED above. The token itself is never logged.
+      opts.log.warn({ path, reason: lookup.reason }, 'refused a bearer token');
+      return false;
+    }
 
     request.founder = lookup.founder;
-    request.lhSession = lookup.session;
-
-    const moved = await slideSession(opts.store, lookup.session, session, opts.clock);
-    if (moved !== null) {
-      // The row and the cookie have to move together. A row saying 90 days
-      // behind a cookie the browser dropped after 30 is a founder who is signed
-      // in according to us and signed out according to their laptop.
-      reply.setCookie(session.cookieName, raw ?? '', cookieOptionsFor(session));
-    }
+    // At most one write an hour, and it never moves the expiry. A token does not
+    // slide the way a session does: see API_TOKEN_TTL_DAYS in ./api-token.ts.
+    await touchApiToken(opts.store, lookup.token, opts.clock);
     return true;
   }
 
   async function requireFounder(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
     if (await resolve(request, reply)) return true;
-    // Every reason ends at the same answer. Telling a caller that a session id
-    // was unknown rather than expired tells them whether they guessed one.
+    // Every reason WITHIN a credential ends at the same answer. Telling a caller
+    // that a session id was unknown rather than expired tells them whether they
+    // guessed one, and the same goes for a token. What `refusalFor` separates is
+    // which credential was offered, which the caller already knows because they
+    // sent it.
     reply.code(401);
-    await reply.send(NOT_SIGNED_IN);
+    await reply.send(refusalFor(request));
     return false;
   }
 
@@ -378,11 +596,17 @@ export function createAuth(opts: AuthPluginOptions): {
      *   because the person using it has not got one. It is the only prefix that
      *   is exempt, and PUBLIC_API_PATHS above is the only other way in.
      *
-     *   Everything else under /api/ requires a session. This is the line that
+     *   Everything else under /api/ requires a founder. This is the line that
      *   makes a route that forgot to call requireFounder safe anyway. It also
      *   means a stranger probing for /api/files gets the same 401 as a stranger
      *   probing for a route that does not exist, which tells them nothing about
      *   what this app has.
+     *
+     *   A FOUNDER, NOT A SESSION, and the difference is one prefix wide.
+     *   `resolve` accepts a session cookie anywhere and a bearer token only
+     *   under MCP_API_PREFIX. Nothing else in this hook knows there are two
+     *   credentials, which is the point: the rule below is still "prove you are
+     *   the founder or you get nothing".
      *
      *   Everything else passes: the built browser bundle and its assets. They
      *   are our code, not the founder's work, and the bundle asks /api/me on
@@ -414,6 +638,17 @@ export function createAuth(opts: AuthPluginOptions): {
        * Costs nothing and changes nothing where sameSite is 'lax', which is
        * every deployment and every laptop. There, the browser has already
        * withheld the cookie and this never fires.
+       *
+       * IT IS NOT EXTENDED TO THE BEARER TOKEN, AND THAT IS NOT AN OVERSIGHT.
+       * Cross site request forgery is an attack on a credential the browser
+       * attaches by itself: the whole trick is that the founder's own browser
+       * sends the cookie to a page that asked it to. Nothing attaches an
+       * Authorization header on anybody's behalf. A page that wanted to forge
+       * one would have to already hold the token, and if it holds the token it
+       * does not need a founder's browser to use it. So this guard has nothing
+       * to say about the second credential, and a version of it that checked
+       * Origin on token requests would refuse the desktop client, which sends
+       * no Origin at all.
        */
       if (session.sameSite === 'none' && crossSiteWrite(request.method, request.headers.origin, request.headers.host)) {
         opts.log.warn(
@@ -440,7 +675,7 @@ export function createAuth(opts: AuthPluginOptions): {
       // where JSON was expected is reported as a parse error that has nothing to
       // do with the real cause.
       reply.code(401);
-      return await reply.send(NOT_SIGNED_IN);
+      return await reply.send(refusalFor(request));
     });
 
     /**
